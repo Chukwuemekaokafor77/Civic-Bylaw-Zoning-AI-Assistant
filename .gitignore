@@ -1,0 +1,44 @@
+# ---- Secrets (Supabase service-role, OpenAI, Groq keys live here) ----
+.env
+.env.*
+!.env.example
+!.env.local.example
+backend/.env
+frontend/.env.local
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node / Next.js ----
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+.vercel/
+
+# ---- Ingestion working files ----
+# Downloaded source PDFs/HTML are large and re-fetchable from source_url
+backend/scripts/.cache/
+backend/scripts/downloads/
+*.pdf.tmp
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Logs ----
+*.log
+npm-debug.log*
