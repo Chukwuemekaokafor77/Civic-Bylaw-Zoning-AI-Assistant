@@ -173,17 +173,23 @@ async def readiness(request: Request) -> JSONResponse:
 
     # Key presence only. Groq and OpenAI are metered, so readiness must not
     # spend money on every probe; real calls are exercised in Phases 2 and 3.
+    #
+    # Truthiness, not `is not None`: an env file containing `OPENAI_API_KEY=`
+    # parses to SecretStr("") rather than None. SecretStr defines __len__, so
+    # an empty one is falsy but not None — checking identity here would report
+    # a blank key as healthy, which is exactly the deploy mistake this probe
+    # exists to catch.
     deps.append(
         DependencyStatus(
             name="openai_key",
-            ok=settings.openai_api_key is not None,
+            ok=bool(settings.openai_api_key),
             detail=None if settings.openai_api_key else "OPENAI_API_KEY not set (needed from Phase 2)",
         )
     )
     deps.append(
         DependencyStatus(
             name="groq_key",
-            ok=settings.groq_api_key is not None,
+            ok=bool(settings.groq_api_key),
             detail=None if settings.groq_api_key else "GROQ_API_KEY not set (needed from Phase 3)",
         )
     )
