@@ -124,16 +124,20 @@ export function RegionalSelector({ value, onChange }: Props) {
             Province or territory
           </label>
           <Select
-            value={value.provinceCode ?? ""}
+            value={value.provinceCode}
             onValueChange={selectProvince}
             disabled={provinces.isLoading || Boolean(provinces.error)}
           >
             <SelectTrigger id="province" className="w-full">
-              <SelectValue
-                placeholder={
-                  provinces.isLoading ? "Loading…" : "Select a province"
+              {/* Without a formatter this renders the raw value - "NB"
+                  rather than "New Brunswick". */}
+              <SelectValue>
+                {(code: string | null) =>
+                  (code &&
+                    provinces.data?.find((p) => p.code === code)?.name) ||
+                  (provinces.isLoading ? "Loading…" : "Select a province")
                 }
-              />
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {(provinces.data ?? []).map((province) => (
@@ -150,22 +154,25 @@ export function RegionalSelector({ value, onChange }: Props) {
             Municipality
           </label>
           <Select
-            value={value.municipality?.id ?? ""}
+            value={value.municipality?.id ?? null}
             onValueChange={selectMunicipality}
             disabled={!value.provinceCode || municipalities.isLoading}
           >
             <SelectTrigger id="municipality" className="w-full">
-              <SelectValue
-                placeholder={
-                  !value.provinceCode
+              {/* "nb_fredericton" is a database key, not something to
+                  show a resident. */}
+              <SelectValue>
+                {(id: string | null) =>
+                  (id && available.find((m) => m.id === id)?.name) ||
+                  (!value.provinceCode
                     ? "Select a province first"
                     : municipalities.isLoading
                       ? "Loading…"
                       : available.length === 0
                         ? "No municipalities available yet"
-                        : "Select a municipality"
+                        : "Select a municipality")
                 }
-              />
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {available.map((municipality) => (
@@ -193,7 +200,11 @@ export function RegionalSelector({ value, onChange }: Props) {
               }
             >
               <SelectTrigger id="language" className="w-full">
-                <SelectValue />
+                <SelectValue>
+                  {(code: string | null) =>
+                    (code && LANGUAGE_LABELS[code]) || code || "English"
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {languages.map((code) => (
