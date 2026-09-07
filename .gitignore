@@ -42,3 +42,7 @@ desktop.ini
 # ---- Logs ----
 *.log
 npm-debug.log*
+
+# ---- Next.js generated types / build ----
+frontend/.next/
+frontend/next-env.d.ts
