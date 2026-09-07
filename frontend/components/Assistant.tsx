@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * Client shell owning the current selection (Phase 4, Step 1).
+ * Client shell owning the current selection (Phase 4).
  *
  * The province, municipality and language chosen here become the retrieval
  * filter for every request, so they live in one place rather than being
- * re-derived by each component. Step 2 hands this selection to ChatBox.
+ * re-derived by each component.
  */
 
 import { useState } from "react";
@@ -28,7 +28,7 @@ export function Assistant() {
   return (
     <div className="space-y-6">
       <RegionalSelector value={selection} onChange={setSelection} />
-      <ChatBox />
+      <ChatBox selection={selection} />
     </div>
   );
 }
