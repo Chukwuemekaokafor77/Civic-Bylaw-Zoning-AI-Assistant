@@ -18,8 +18,21 @@
 --  PART 0 - EXTENSIONS                                          [SPEC]
 -- =====================================================================
 
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- fuzzy / keyword search support
+-- Supabase keeps extensions in a dedicated `extensions` schema rather than
+-- `public`, and includes it in the default search_path. Creating the schema
+-- first keeps this script portable to a plain PostgreSQL instance (local
+-- dev, CI), where it would not otherwise exist.
+CREATE SCHEMA IF NOT EXISTS extensions;
+
+CREATE EXTENSION IF NOT EXISTS vector  WITH SCHEMA extensions;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;   -- fuzzy / keyword search
+
+-- Required for the rest of this script, not just for tidiness. Supabase's
+-- default search_path already includes `extensions`, but a plain
+-- PostgreSQL session uses "$user", public — where `VECTOR(1536)`,
+-- `gin_trgm_ops` and `vector_cosine_ops` all fail to resolve. Setting it
+-- here keeps one script working on both.
+SET search_path = public, extensions;
 
 -- French stemming for bilingual full-text search ships with core
 -- PostgreSQL as the 'french' text search configuration; no extension
@@ -267,6 +280,7 @@ RETURNS TABLE (
 )
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, extensions
 AS $$
 BEGIN
   RETURN QUERY
@@ -351,6 +365,7 @@ RETURNS TABLE (
 )
 LANGUAGE plpgsql
 SECURITY INVOKER
+SET search_path = public, extensions
 AS $$
 DECLARE
   v_config regconfig := CASE WHEN target_language = 'fr'
