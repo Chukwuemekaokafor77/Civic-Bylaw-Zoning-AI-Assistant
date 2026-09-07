@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Atlantic Canada Civic Bylaw & Zoning Assistant",
+  title: "Canadian Civic Bylaw & Zoning Assistant",
   description:
-    "Ask questions about municipal zoning bylaws in New Brunswick, Nova Scotia, Prince Edward Island, and Newfoundland and Labrador. Answers cite the official bylaw section they come from.",
+    "Ask questions about Canadian municipal zoning bylaws. Answers cite the official bylaw section they come from. Currently covering Atlantic Canada, expanding nationwide.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

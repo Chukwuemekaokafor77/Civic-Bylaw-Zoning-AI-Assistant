@@ -64,11 +64,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Atlantic Canada Civic Bylaw & Zoning AI Assistant",
+    title="Canadian Civic Bylaw & Zoning AI Assistant",
     description=(
-        "Retrieval-augmented assistant over municipal zoning bylaws in "
-        "New Brunswick, Nova Scotia, Prince Edward Island, and "
-        "Newfoundland and Labrador."
+        "Retrieval-augmented assistant over Canadian municipal zoning "
+        "bylaws. Launching with Atlantic Canada (New Brunswick, Nova "
+        "Scotia, Prince Edward Island, Newfoundland and Labrador) and "
+        "expanding jurisdiction by jurisdiction."
     ),
     version=VERSION,
     lifespan=lifespan,
@@ -127,8 +128,9 @@ async def health() -> HealthResponse:
 async def _check_supabase(settings: Settings, client: httpx.AsyncClient) -> DependencyStatus:
     """Confirm Supabase PostgREST is reachable and the service-role key works.
 
-    Hits the `provinces` table, which the Phase 1 DDL seeds with four rows.
-    A 200 here proves URL, key, and schema are all in place at once.
+    Hits the `provinces` table, which the Phase 1 migrations seed with all
+    13 Canadian jurisdictions. A 200 here proves URL, key, and schema are
+    all in place at once.
     """
     started = time.perf_counter()
     url = f"{settings.supabase_url}/rest/v1/provinces"

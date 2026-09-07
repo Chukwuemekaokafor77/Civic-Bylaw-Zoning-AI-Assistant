@@ -15,7 +15,13 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Language = Literal["en", "fr"]
-ProvinceCode = Literal["NB", "NS", "PE", "NL"]
+# All 10 provinces and 3 territories. Presence here means the code is a
+# valid identifier, NOT that the jurisdiction has indexed bylaws --
+# `provinces.is_live` governs what the UI may offer.
+ProvinceCode = Literal[
+    "AB", "BC", "MB", "NB", "NL", "NS", "ON", "PE", "QC", "SK",  # provinces
+    "NT", "NU", "YT",                                            # territories
+]
 
 
 # ---------------------------------------------------------------------
@@ -25,6 +31,10 @@ ProvinceCode = Literal["NB", "NS", "PE", "NL"]
 class Province(BaseModel):
     code: ProvinceCode
     name: str
+    type: Literal["province", "territory"] = "province"
+    # False until the jurisdiction has ingested municipalities that pass
+    # the Phase 5 eval. RLS hides non-live rows from the anon key.
+    is_live: bool = False
 
 
 class MunicipalitySource(BaseModel):

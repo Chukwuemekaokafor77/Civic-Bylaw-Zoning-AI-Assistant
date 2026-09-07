@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  schema:
+    name: Database schema
+    runs-on: ubuntu-latest
+
+    # pgvector rather than plain postgres: the schema declares
+    # VECTOR(1536) and an HNSW index, so stock postgres cannot validate it.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bylaw_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      PGPASSWORD: postgres
+      PSQL: psql -h localhost -U postgres -d bylaw_ci -v ON_ERROR_STOP=1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Create Supabase-equivalent roles
+        run: |
+          $PSQL -c "CREATE ROLE anon NOLOGIN;
+                    CREATE ROLE authenticated NOLOGIN;
+                    CREATE ROLE service_role NOLOGIN BYPASSRLS;"
+
+      - name: Apply migrations
+        run: |
+          for f in backend/db/*.sql; do
+            echo "--- applying $f"
+            $PSQL -q -f "$f"
+          done
+
+      - name: Re-apply migrations (idempotency)
+        run: |
+          for f in backend/db/*.sql; do
+            $PSQL -q -f "$f"
+          done
+
+      - name: Assert expected objects exist
+        run: |
+          $PSQL -tA -c "
+            do \$\$
+            declare n int;
+            begin
+              select count(*) into n from pg_tables where schemaname='public';
+              if n <> 5 then raise exception 'expected 5 tables, found %', n; end if;
+
+              select count(*) into n from pg_proc p
+                join pg_namespace ns on ns.oid=p.pronamespace
+                where ns.nspname='public' and p.proname like '%bylaw_chunks%';
+              if n <> 2 then raise exception 'expected 2 retrieval RPCs, found %', n; end if;
+
+              select count(*) into n from pg_class
+                where relrowsecurity and relname in
+                ('provinces','municipalities','municipality_sources','bylaw_chunks','query_log');
+              if n <> 5 then raise exception 'expected RLS on 5 tables, found %', n; end if;
+
+              select count(*) into n from provinces;
+              if n <> 13 then raise exception 'expected 13 jurisdictions, found %', n; end if;
+            end \$\$;"
+
+      - name: Retrieval smoke test
+        # Guards the behaviour that is easy to regress silently: the
+        # section-number boundary (6.3 must match 6.3(1)(a) but not 6.30)
+        # and the language filter.
+        run: |
+          $PSQL -q -f backend/db/ci/smoke_test.sql
+
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Validate municipality registry
+        working-directory: backend
+        run: python scripts/validate_config.py
+
+      - name: Import check
+        working-directory: backend
+        env:
+          SUPABASE_URL: https://ci-placeholder.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+        run: python -c "from app.main import app; print(f'{len(app.routes)} routes registered')"
+
+      - name: Tests
+        working-directory: backend
+        env:
+          SUPABASE_URL: https://ci-placeholder.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+        run: pytest -q tests || [ $? -eq 5 ]  # exit 5 = no tests collected yet
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # Build first: Next 16 generates the global route types (LayoutProps
+      # and friends) into .next/types, so a standalone tsc run before the
+      # build fails on types that legitimately exist.
+      - run: npx next build
+      - run: npx tsc --noEmit
+      - run: npx eslint .

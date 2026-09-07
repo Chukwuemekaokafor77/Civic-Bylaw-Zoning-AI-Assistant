@@ -14,6 +14,9 @@
  *  - `is_active = false` municipalities must never appear. Halifax and
  *    Charlottetown are currently inactive (see
  *    backend/scripts/municipalities_config.json for why).
+ *  - The project targets all of Canada, but launches with Atlantic
+ *    Canada. Filter provinces on `is_live` so unlaunched jurisdictions
+ *    are not offered.
  *  - A municipality whose `languages` includes "fr" needs a language
  *    control; the Phase 0 bilingual lock makes language part of the
  *    retrieval filter, not a display preference.
@@ -28,7 +31,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-const PROVINCES = [
+/**
+ * Placeholder only. Phase 4 reads this from the `provinces` table, which
+ * holds all 13 Canadian jurisdictions but exposes just the live ones to
+ * the anon key (RLS on `is_live`). Hardcoding the full list here would
+ * offer users jurisdictions that return no results.
+ */
+const LAUNCH_JURISDICTIONS = [
   { code: "NB", name: "New Brunswick" },
   { code: "NS", name: "Nova Scotia" },
   { code: "PE", name: "Prince Edward Island" },
@@ -48,7 +57,7 @@ export function RegionalSelector() {
         </label>
         <Select disabled>
           <SelectTrigger id="province" className="w-full">
-            <SelectValue placeholder={`Select a province (${PROVINCES.length})`} />
+            <SelectValue placeholder={`Select a province (${LAUNCH_JURISDICTIONS.length})`} />
           </SelectTrigger>
           <SelectContent />
         </Select>

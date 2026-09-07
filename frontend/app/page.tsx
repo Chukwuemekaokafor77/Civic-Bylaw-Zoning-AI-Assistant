@@ -23,13 +23,14 @@ export default function Home() {
         <div className="flex items-center gap-2">
           <Landmark className="size-5" aria-hidden />
           <h1 className="text-2xl font-semibold tracking-tight text-balance">
-            Atlantic Canada Civic Bylaw &amp; Zoning Assistant
+            Canadian Civic Bylaw &amp; Zoning Assistant
           </h1>
         </div>
         <p className="text-muted-foreground text-sm text-pretty">
           Answers about land use, secondary suites, setbacks, and home
           businesses, drawn only from official municipal bylaws and cited back
-          to the section they came from.
+          to the section they came from. Launching across Atlantic Canada and
+          expanding nationwide.
         </p>
       </header>
 

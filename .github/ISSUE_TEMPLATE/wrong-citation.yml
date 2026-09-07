@@ -1,0 +1,51 @@
+name: Report a wrong or misleading answer
+description: The assistant gave an answer that misstates a bylaw, or cited the wrong section
+title: "[citation] "
+labels: ["citation-accuracy", "priority"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most important category of bug in this project. People may
+        act on these answers when deciding whether they can build something.
+        Reports here are triaged ahead of features.
+
+  - type: input
+    id: municipality
+    attributes:
+      label: Municipality selected
+    validations: { required: true }
+
+  - type: textarea
+    id: question
+    attributes:
+      label: The question you asked
+    validations: { required: true }
+
+  - type: textarea
+    id: answer
+    attributes:
+      label: The answer you received
+      description: Paste it in full, including the citation and disclaimer.
+    validations: { required: true }
+
+  - type: textarea
+    id: correct
+    attributes:
+      label: What the bylaw actually says
+      description: Quote the relevant clause and give its section number.
+    validations: { required: true }
+
+  - type: dropdown
+    id: failure_mode
+    attributes:
+      label: What went wrong?
+      options:
+        - Cited a section that does not say what the answer claims
+        - Cited a section from the wrong municipality
+        - Answer used a repealed or superseded bylaw
+        - Answered in the wrong language
+        - Invented a rule not present in any cited section
+        - Said it could not find a rule that does exist
+        - Other
+    validations: { required: true }

@@ -3,10 +3,15 @@
   "generated_at": "2026-09-06",
   "scope": {
     "phase": "Phase 1, Step 2",
-    "languages": ["en", "fr"],
-    "note": "Launch set locked in Phase 0 as all nine Atlantic Canada municipalities."
+    "target": "All of Canada - 10 provinces and 3 territories",
+    "launch": "Atlantic Canada (NB, NS, PE, NL) first, expanding jurisdiction by jurisdiction",
+    "languages": [
+      "en",
+      "fr"
+    ],
+    "note": "The nine municipalities below are the LAUNCH set, not the target set. provinces.is_live gates which jurisdictions the UI offers, so unlaunched ones cannot be selected and return nothing. Adding a jurisdiction means adding municipality entries here, ingesting them, passing the Phase 5 golden-question eval, then flipping is_live.",
+    "language_limits": "bylaw_chunks.language is CHECK-constrained to ('en','fr'), which covers Quebec and bilingual New Brunswick but NOT Nunavut (Inuktitut, Inuinnaqtun) or the Northwest Territories (eleven official languages). Those jurisdictions need both a widened constraint and an embedding model that handles the languages - text-embedding-3-small does not."
   },
-
   "verification": {
     "method": "Every source_url below was fetched over HTTP on 2026-09-06 with a ranged GET; http_status and content_type record what actually came back. URLs surfaced by search but returning 404 or a login redirect were discarded, not carried forward.",
     "important": "http_verified only means the URL serves a PDF today. It is NOT a legal confirmation that the document is the current in-force consolidation. bylaw_last_verified_at is therefore null for every municipality until a human confirms currency with municipal planning staff. Section 5 Rule 6 injects that date into the public disclaimer, so a null must render as 'not yet verified' rather than a fabricated date.",
@@ -43,13 +48,15 @@
       }
     ]
   },
-
   "municipalities": [
     {
       "id": "nb_fredericton",
       "province_code": "NB",
       "name": "Fredericton",
-      "languages": ["en", "fr"],
+      "languages": [
+        "en",
+        "fr"
+      ],
       "is_active": true,
       "status": "ready",
       "source_bylaw_name": "Zoning By-law Z-5",
@@ -79,12 +86,14 @@
       ],
       "notes": "Cleanest bilingual case in the set: fully separate EN and FR documents, so language tagging is a property of the source file rather than a parsing problem. Amendments (Z-5.312, Z-5.338, Z-5.358 and others) are published as separate PDFs, so the base consolidation may lag council decisions. Phase 2 must decide whether amendments are ingested as their own documents or whether only the consolidation is trusted."
     },
-
     {
       "id": "nb_moncton",
       "province_code": "NB",
       "name": "Moncton",
-      "languages": ["en", "fr"],
+      "languages": [
+        "en",
+        "fr"
+      ],
       "is_active": true,
       "status": "ready",
       "source_bylaw_name": "By-law Z-222 Zoning By-law",
@@ -114,12 +123,13 @@
       ],
       "notes": "PHASE 2 RISK: both language rows point at the SAME file. Moncton publishes one interleaved bilingual document with English and French presented together, not two separate PDFs. The parser must therefore split languages out of a single PDF and tag each chunk, rather than inheriting language from the file. This is the hardest ingestion case in the set and should be built after Fredericton, which is the easy bilingual case. Amendments (Z-222.47 through Z-222.60) are published separately."
     },
-
     {
       "id": "nb_saintjohn",
       "province_code": "NB",
       "name": "Saint John",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "is_active": true,
       "status": "ready",
       "source_bylaw_name": "Zoning By-law (ZoneSJ) — 2026 Office Consolidation",
@@ -139,12 +149,13 @@
       ],
       "notes": "HIGHEST STALENESS CONSEQUENCE IN THE SET. By-law C.P. 111-183 (third reading January 2025) merged the One-Unit (R1), Two-Unit (R2) and Suburban Residential (RSS) zones into a single Low-Rise Residential (RL) zone permitting up to four units per lot in Primary Development Areas and six in Intensification Areas. Any pre-2025 copy would answer secondary-suite and density questions with zones that no longer exist — precisely the questions this assistant is built to answer. The commonly-cited 2021 URL is dead (404) and was discarded. This is a Laserfiche WebLink URL whose numeric docid (804158) is tied to this specific consolidation, so a future consolidation will change the id and this URL will break rather than silently serve stale text — treat a 404 here as a re-ingestion trigger, not an error to retry. No French version located; NB is officially bilingual, so confirm with the City whether one exists before treating en-only as settled."
     },
-
     {
       "id": "ns_halifax",
       "province_code": "NS",
       "name": "Halifax Regional Municipality",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "is_active": false,
       "status": "blocked_needs_decision",
       "source_bylaw_name": "Regional Centre Land Use By-law",
@@ -174,12 +185,13 @@
       ],
       "notes": "BLOCKED — ARCHITECTURAL DECISION REQUIRED, NOT A DATA GAP. HRM has no single municipality-wide zoning bylaw. It has roughly twenty-one community plan areas, each with its own Land Use By-law (Regional Centre, Halifax Mainland, Planning Districts 1 and 3 / St. Margarets Bay, Eastern Shore West, and so on). The schema's tenancy unit is the municipality; HRM's real tenancy unit is the plan area. Ingesting two of ~21 LUBs under a single 'Halifax' tenant means a resident of Sackville or the Eastern Shore asks a question and is answered from Regional Centre rules — a silent violation of Section 5 Rule 2 (never mix bylaws) that produces a confidently wrong, correctly-formatted citation. Options: (a) model each plan area as its own municipality row, which fits the existing schema and makes RegionalSelector a three-level cascade; (b) add a plan_area dimension to bylaw_chunks and the retrieval filters; (c) launch Halifax scoped explicitly to the Regional Centre and say so in the UI. This needs a decision before Phase 2 ingestion touches HRM."
     },
-
     {
       "id": "ns_cbrm",
       "province_code": "NS",
       "name": "Cape Breton Regional Municipality",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "is_active": true,
       "status": "ready",
       "source_bylaw_name": "CBRM Land Use By-law",
@@ -199,12 +211,13 @@
       ],
       "notes": "The consolidation date is encoded in the URL path, so every amendment produces a new URL and the old one 404s. Change detection cannot rely on hashing a fixed URL here; the ingestion job must re-discover the current link from the CBRM planning page (https://cbrm.ns.ca/business/municipal-planing-land-use-by-laws/) before hashing. CBRM also notes that Municipal Planning Strategy and Land Use By-law documents are not listed on its main By-Laws page, so that page is the wrong discovery target."
     },
-
     {
       "id": "pe_charlottetown",
       "province_code": "PE",
       "name": "Charlottetown",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "is_active": false,
       "status": "blocked_no_citable_source",
       "source_bylaw_name": "Zoning and Development Bylaw",
@@ -225,12 +238,13 @@
       ],
       "notes": "BLOCKED — NO CITABLE CURRENT SOURCE. Every City-hosted route to the Zoning and Development Bylaw failed: the DisplayFile.aspx item id 404s, the GetFile.ashx key redirects to a login gateway, and the bylaw index page renders its document list client-side so the links are not in the served HTML. Compounding this, Charlottetown is actively replacing the bylaw — a new Zoning and Development Bylaw went through public consultation with council targeting adoption in October, meaning even a correct copy today may be superseded within weeks. Ingesting the IRAC archive copy would give the public confidently-cited rules from a document of unknown currency for a city mid-rewrite. Resolution requires a human to obtain the current consolidation directly from City planning staff and confirm whether the new bylaw has been adopted."
     },
-
     {
       "id": "pe_summerside",
       "province_code": "PE",
       "name": "Summerside",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "is_active": true,
       "status": "ready",
       "source_bylaw_name": "Zoning Bylaw CS-40",
@@ -250,12 +264,13 @@
       ],
       "notes": "Served from a CiviclLive CDN; the request redirects to cdnsm5-hosted.civiclive.com, so the ingestion HTTP client must follow redirects. A second identical copy exists under the 'Building & Development/Zoning, Rules Bylaws' path with a 'FINAL' suffix; the shorter root path was chosen because it avoids an unescaped ampersand in the URL. Summerside also publishes an ADU Incentive Policy and ADU Guidebook separately from CS-40 — relevant to secondary-suite questions but out of scope for the zoning corpus unless deliberately added."
     },
-
     {
       "id": "nl_stjohns",
       "province_code": "NL",
       "name": "St. John's",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "is_active": true,
       "status": "ready",
       "source_bylaw_name": "Envision St. John's Development Regulations",
@@ -276,12 +291,13 @@
       ],
       "notes": "The stjohns.ca path is a stable alias that 302s to a dated CDN filename. Store and cite the stable alias, but hash the resolved CDN URL — the resolved filename carries the amendment date and is the cheapest available change signal. Note the alias currently resolves to an August 2026 amendment while the site elsewhere describes a May 2026 version, so the alias is the fresher of the two. Development Regulations Appendices are a separate PDF and are not included here."
     },
-
     {
       "id": "nl_mountpearl",
       "province_code": "NL",
       "name": "Mount Pearl",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "is_active": true,
       "status": "ready_high_staleness_risk",
       "source_bylaw_name": "Mount Pearl Development Regulations 2010",

@@ -1,0 +1,100 @@
+name: Add a municipality
+description: Propose a new municipality for the bylaw index
+title: "[municipality] "
+labels: ["municipality", "needs-source-verification"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for expanding coverage — this is the work that does not scale with one person.
+
+        Please read `docs/ADDING_A_MUNICIPALITY.md` first. The single most
+        important part is **source verification**: a URL that returns a PDF is
+        not proof that the PDF is the bylaw currently in force. We have already
+        found a repealed by-law still being served from a live municipal URL.
+
+  - type: input
+    id: municipality
+    attributes:
+      label: Municipality
+      placeholder: e.g. Charlottetown
+    validations: { required: true }
+
+  - type: dropdown
+    id: jurisdiction
+    attributes:
+      label: Province or territory
+      options: [AB, BC, MB, NB, NL, NS, ON, PE, QC, SK, NT, NU, YT]
+    validations: { required: true }
+
+  - type: input
+    id: bylaw_name
+    attributes:
+      label: Exact bylaw name and number
+      placeholder: e.g. Zoning Bylaw CS-40
+    validations: { required: true }
+
+  - type: input
+    id: source_url
+    attributes:
+      label: Direct source URL
+      description: Must be https and must resolve to the document itself, not a landing or login page.
+    validations: { required: true }
+
+  - type: dropdown
+    id: source_type
+    attributes:
+      label: Source format
+      options: [pdf, html]
+    validations: { required: true }
+
+  - type: input
+    id: consolidation
+    attributes:
+      label: Consolidation / effective date shown in the document
+      placeholder: e.g. Effective 2025-01-23, or "amendments to 2026-06-23"
+    validations: { required: true }
+
+  - type: checkboxes
+    id: verification
+    attributes:
+      label: Source verification
+      options:
+        - label: The URL returns HTTP 200/206 with content-type application/pdf or text/html
+          required: true
+        - label: I confirmed this is the CURRENT consolidation, not a superseded or repealed version
+          required: true
+        - label: The document is hosted by the municipality itself (not a third-party mirror or archive)
+          required: true
+        - label: The URL requires no login and no session cookie
+          required: true
+
+  - type: textarea
+    id: how_verified
+    attributes:
+      label: How did you confirm it is currently in force?
+      description: |
+        Be specific. "It was the first search result" is not verification.
+        Best is confirmation from municipal planning staff, or a consolidation
+        date on the document that post-dates the most recent amendment listed
+        on the municipality's bylaw page.
+    validations: { required: true }
+
+  - type: textarea
+    id: languages
+    attributes:
+      label: Languages published
+      description: |
+        Note whether English and French are separate documents or interleaved in
+        one file. Moncton publishes both languages in a single PDF, which needs
+        different parsing than Fredericton's separate EN and FR files.
+    validations: { required: true }
+
+  - type: textarea
+    id: gotchas
+    attributes:
+      label: Anything unusual about this municipality?
+      description: |
+        Especially: does it have ONE municipality-wide zoning bylaw, or several
+        by plan area/district? Halifax has ~21 separate Land Use By-laws, which
+        is why it is not yet launched.
