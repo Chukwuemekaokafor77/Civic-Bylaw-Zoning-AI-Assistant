@@ -1,7 +1,6 @@
 import { Landmark } from "lucide-react";
 
-import { ChatBox } from "@/components/ChatBox";
-import { RegionalSelector } from "@/components/RegionalSelector";
+import { Assistant } from "@/components/Assistant";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Card,
@@ -12,9 +11,9 @@ import {
 } from "@/components/ui/card";
 
 /**
- * Phase 1 shell. A React Server Component that composes the two
- * placeholder client components. No data fetching yet — the registry query
- * and the streamed answer arrive in Phase 4.
+ * A React Server Component wrapping the client-side assistant. Selection
+ * state and all data fetching live in <Assistant>, so this stays static
+ * and streams to the browser without waiting on the registry.
  */
 export default function Home() {
   return (
@@ -29,17 +28,17 @@ export default function Home() {
         <p className="text-muted-foreground text-sm text-pretty">
           Answers about land use, secondary suites, setbacks, and home
           businesses, drawn only from official municipal bylaws and cited back
-          to the section they came from. Launching across Atlantic Canada and
-          expanding nationwide.
+          to the section they came from.
         </p>
       </header>
 
       <Alert>
-        <AlertTitle>Phase 1 — foundation only</AlertTitle>
+        <AlertTitle>Early access — coverage is still limited</AlertTitle>
         <AlertDescription>
-          The interface below is a structural placeholder. Bylaw indexing
-          (Phase 2) and question answering (Phases 3–4) are not yet wired up,
-          so the controls are intentionally disabled.
+          Only municipalities listed below have had their bylaws indexed, and
+          that text has not yet been verified against each municipality&apos;s
+          current consolidation. Always confirm with local planning staff
+          before relying on an answer.
         </AlertDescription>
       </Alert>
 
@@ -53,8 +52,7 @@ export default function Home() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <RegionalSelector />
-          <ChatBox />
+          <Assistant />
         </CardContent>
       </Card>
     </main>
