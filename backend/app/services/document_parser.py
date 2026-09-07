@@ -73,17 +73,41 @@ MIN_COLUMN_LINES = 2
 # A list marker opening a line: "(a)", "(iii)", "(A)", "(12)".
 LIST_MARKER = re.compile(r"^\((?:[a-z]{1,3}|[A-Z]{1,3}|\d{1,3})\)\s*\S")
 
-# A glyph set below this fraction of the preceding one is a superscript.
+# A glyph shorter than this fraction of the preceding one, AND sitting on a
+# raised baseline, is a superscript.
 SUPERSCRIPT_SIZE_RATIO = 0.8
+
+# How far above the preceding word's baseline the glyph must sit, as a
+# fraction of that word's height. Height alone is not enough: a digit is
+# already shorter than a word with ascenders, so "case 2" would qualify.
+# A raised baseline is what actually distinguishes m² from m 2.
+SUPERSCRIPT_RISE_RATIO = 0.15
 
 SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 
+def _height(word: dict) -> float:
+    return float(word.get("bottom", 0.0)) - float(word.get("top", 0.0))
+
+
 def _is_superscript(word: dict, previous: dict) -> bool:
-    size, prior = word.get("size"), previous.get("size")
-    if not size or not prior:
+    """Whether `word` is set as a superscript of the word before it.
+
+    Measured from the word's own box rather than from a `size` attribute.
+    Requesting `size` in extract_words() makes pdfplumber start a new word
+    wherever font size changes, which silently re-segments the whole
+    document: the zone codes in the sign matrix came apart into "L", "O",
+    "C", "M" instead of LC, OC, COR-1, MX-1, and were ingested that way.
+    """
+    height, prior = _height(word), _height(previous)
+    if height <= 0 or prior <= 0:
         return False
-    return size < prior * SUPERSCRIPT_SIZE_RATIO
+
+    smaller = height < prior * SUPERSCRIPT_SIZE_RATIO
+    raised = float(word.get("bottom", 0.0)) < (
+        float(previous.get("bottom", 0.0)) - prior * SUPERSCRIPT_RISE_RATIO
+    )
+    return smaller and raised
 
 
 def _strip_accents(text: str) -> str:
@@ -539,7 +563,9 @@ class ParsedPage:
 
 def parse_page(page, scheme: NumberingScheme) -> ParsedPage:
     """Extract one page into ordered, header-stripped, column-aware lines."""
-    lines = _group_lines(page.extract_words(extra_attrs=["fontname", "size"]))
+    # Only fontname: adding "size" re-segments words wherever the size
+    # changes mid-word, which corrupted the sign-matrix zone codes.
+    lines = _group_lines(page.extract_words(extra_attrs=["fontname"]))
 
     part_number: str | None = None
     part_title: str | None = None

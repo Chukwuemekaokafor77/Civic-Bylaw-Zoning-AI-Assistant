@@ -32,13 +32,28 @@ BOLD = "LGGUDB+Arial-BoldMT"
 BODY = "SBVKXN+ArialMT"
 
 
-def word(text: str, x0: float, top: float, *, font: str = BODY, width: float = 6.0) -> dict:
-    """One extract_words() record."""
+def word(
+    text: str,
+    x0: float,
+    top: float,
+    *,
+    font: str = BODY,
+    width: float = 6.0,
+    height: float = 11.0,
+) -> dict:
+    """One extract_words() record.
+
+    `top`/`bottom` matter: superscripts are detected from the word box,
+    not from a `size` attribute. Requesting `size` from pdfplumber splits
+    words wherever the size changes mid-word, which corrupted the zone
+    codes in the sign matrix.
+    """
     return {
         "text": text,
         "x0": x0,
         "x1": x0 + width * len(text),
         "top": top,
+        "bottom": top + height,
         "fontname": font,
     }
 
@@ -378,22 +393,34 @@ def test_superscript_is_reattached_to_its_unit():
     """"345 m 2" is neither the unit a resident reads nor a searchable term."""
     words = [
         word("345", 388, 501),
-        {**word("m", 410, 501), "size": 11.0},
-        {**word("2", 419, 500), "size": 6.41},
+        word("m", 410, 501),
+        # Measured from Z-5 p135: shorter and sitting on a raised baseline.
+        word("2", 419, 500.6, height=6.41),
     ]
     assert _group_lines(words)[0].text == "345 m²"
 
 
 def test_same_size_digit_is_not_treated_as_a_superscript():
-    words = [
-        {**word("30", 144, 653), "size": 11.0},
-        {**word("2", 170, 653), "size": 11.0},
-    ]
+    words = [word("30", 144, 653), word("2", 170, 653)]
     assert _group_lines(words)[0].text == "30 2"
 
 
-def test_superscript_detection_tolerates_missing_font_size():
-    assert _group_lines([word("345", 388, 501), word("2", 410, 501)])[0].text == "345 2"
+def test_a_small_digit_on_the_same_baseline_is_not_a_superscript():
+    """Height alone would misread "case 2"; the raised baseline is required."""
+    words = [
+        word("case", 144, 653),
+        # Shorter box, but bottom-aligned with its neighbour.
+        {**word("2", 180, 657, height=7.0), "bottom": 664.0},
+    ]
+    assert _group_lines(words)[0].text == "case 2"
+
+
+def test_superscript_detection_tolerates_a_missing_box():
+    plain = [
+        {"text": "345", "x0": 388, "x1": 400, "top": 501, "fontname": BODY},
+        {"text": "2", "x0": 410, "x1": 416, "top": 501, "fontname": BODY},
+    ]
+    assert _group_lines(plain)[0].text == "345 2"
 
 
 def test_clean_text_closes_the_gap_before_stray_punctuation():

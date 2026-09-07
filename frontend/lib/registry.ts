@@ -87,9 +87,23 @@ export function useMunicipalities(provinceCode: string | null) {
  * an unverified corpus has to say so rather than show a fetch date dressed
  * up as a verification.
  */
-export function verificationLabel(municipality: Municipality | null): string {
-  if (!municipality) return "";
-  return municipality.bylaw_last_verified_at
-    ? `Bylaw text last verified ${municipality.bylaw_last_verified_at}`
-    : "Bylaw text not yet verified against the current consolidation";
+export type VerificationStatus = {
+  verified: boolean;
+  label: string;
+};
+
+export function verificationStatus(
+  municipality: Municipality | null,
+): VerificationStatus | null {
+  if (!municipality) return null;
+
+  const date = municipality.bylaw_last_verified_at;
+  return date
+    ? { verified: true, label: `Bylaw text last verified ${date}` }
+    : {
+        verified: false,
+        label:
+          "Bylaw text has not yet been verified against this municipality's " +
+          "current consolidation — it may be out of date.",
+      };
 }

@@ -9,7 +9,12 @@ row. Citations go out before the tokens so the reader sees which bylaw
 sections an answer rests on even if they stop reading halfway.
 """
 
-from __future__ import annotations
+# NOTE: no `from __future__ import annotations` here, deliberately.
+# Postponed annotations turn parameter types into strings, and FastAPI
+# resolves them against the function's __globals__. slowapi's @limit
+# wrapper has its own module globals, so "ChatRequest" becomes
+# unresolvable and FastAPI silently demotes the body parameter to a query
+# parameter - every POST /stream then fails validation with a 422.
 
 import json
 import time
@@ -22,6 +27,7 @@ import structlog
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import Settings, get_settings
@@ -35,6 +41,11 @@ from app.models.schemas import (
 )
 from app.services.audit_logger import AuditLogger, QueryRecord
 from app.services.rag_engine import GenerationContext, RagEngine
+from app.services.rate_limit import (
+    build_limiter,
+    rate_limit_handler,
+    stream_limits,
+)
 from app.services.retrieval import HybridRetriever, MunicipalityInfo
 
 VERSION = "0.1.0"
@@ -96,6 +107,14 @@ app = FastAPI(
 )
 
 _settings = get_settings()
+
+# Section 1: per-IP and per-session throttling. Both providers behind an
+# answer are metered, so an unthrottled loop spends the day's free-tier
+# quota and leaves everyone else with the fallback message.
+limiter = build_limiter(_settings)
+STREAM_LIMITS = stream_limits(_settings)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -268,6 +287,7 @@ def _event(payload: StreamEventType) -> dict:
 
 
 @app.post("/stream", tags=["chat"])
+@limiter.limit(STREAM_LIMITS)
 async def stream(request: Request, body: ChatRequest):
     """Answer one question about one municipality's bylaws, as SSE.
 

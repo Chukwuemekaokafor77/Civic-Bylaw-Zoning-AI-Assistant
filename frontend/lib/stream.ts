@@ -64,6 +64,32 @@ export class StreamHttpError extends Error {
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
+const SESSION_HEADER = "X-Session-Id";
+const SESSION_STORAGE_KEY = "bylaw-assistant-session";
+
+/**
+ * Opaque per-tab id used only for rate limiting.
+ *
+ * Kept in sessionStorage so one tab keeps one budget, and held per tab
+ * rather than per browser so a second tab is not throttled by the first.
+ * It identifies nobody: the backend combines it with the caller's IP to
+ * form a limiter key and never stores it in the audit log.
+ */
+function sessionId(): string {
+  if (typeof window === "undefined") return "server";
+  try {
+    const existing = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (existing) return existing;
+    const fresh = crypto.randomUUID();
+    window.sessionStorage.setItem(SESSION_STORAGE_KEY, fresh);
+    return fresh;
+  } catch {
+    // Private browsing can refuse storage; a per-call id still gives the
+    // IP half of the key something to combine with.
+    return crypto.randomUUID();
+  }
+}
+
 async function messageFor(response: Response): Promise<string> {
   try {
     const body = await response.json();
@@ -115,7 +141,10 @@ export async function streamAnswer(
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      [SESSION_HEADER]: sessionId(),
+    },
     body: JSON.stringify(request),
     signal,
   });

@@ -355,3 +355,61 @@ def test_truncation_notice_is_localised():
 def test_truncated_answer_still_gets_the_disclaimer():
     engine = engine_finishing("length", ["partial"])
     assert has_disclaimer(run(engine))
+
+
+# ---------------------------------------------------------------------
+#  Conflicting clauses (Phase 5, Step 3)
+#
+#  Rule 4 requires that when retrieved chunks disagree - an amended clause
+#  alongside the original it replaced - both are surfaced and the conflict
+#  is flagged. Silently picking one would state a superseded setback as
+#  current law, with a correct-looking citation.
+# ---------------------------------------------------------------------
+
+
+def conflicting_pair() -> list[Chunk]:
+    """Two versions of one rule, as a mid-amendment corpus would hold."""
+    original = chunk(
+        "7.3(7)",
+        section_title="Garden Suites",
+        chunk_content=(
+            "Section 7.3(7) Garden Suites:\n"
+            "(a) A garden suite shall not exceed a maximum floor area of 75 m²."
+        ),
+        page_number=127,
+    )
+    amended = chunk(
+        "7.3(7)",
+        section_title="Garden Suites (as amended by Z-5.312)",
+        chunk_content=(
+            "Section 7.3(7) Garden Suites, as amended by Z-5.312:\n"
+            "(a) A garden suite shall not exceed a maximum floor area of 90 m²."
+        ),
+        page_number=127,
+    )
+    return [original, amended]
+
+
+def test_conflicting_chunks_both_reach_the_prompt():
+    """The model cannot flag a conflict it was never shown."""
+    prompt = build_system_prompt(conflicting_pair(), ctx())
+    assert "75 m²" in prompt
+    assert "90 m²" in prompt
+
+
+def test_conflicting_chunks_are_separately_citable():
+    prompt = build_system_prompt(conflicting_pair(), ctx())
+    assert prompt.count("CITE AS: [Fredericton - Zoning By-law Z-5, Section 7.3(7)]") == 2
+    assert "[Passage 1]" in prompt and "[Passage 2]" in prompt
+
+
+def test_prompt_instructs_the_model_to_surface_both():
+    prompt = build_system_prompt(conflicting_pair(), ctx())
+    assert "conflict" in prompt.lower()
+    assert "surface both" in prompt.lower()
+
+
+def test_amendment_context_is_preserved_in_the_prompt():
+    """The amending bylaw number is how a reader tells which is current."""
+    prompt = build_system_prompt(conflicting_pair(), ctx())
+    assert "Z-5.312" in prompt

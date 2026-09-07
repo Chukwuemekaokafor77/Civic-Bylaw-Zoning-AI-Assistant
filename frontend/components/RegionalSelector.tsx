@@ -28,7 +28,7 @@ import {
 import {
   useMunicipalities,
   useProvinces,
-  verificationLabel,
+  verificationStatus,
   type Municipality,
 } from "@/lib/registry";
 
@@ -111,6 +111,7 @@ export function RegionalSelector({ value, onChange }: Props) {
   }
 
   const showLanguage = languages.length > 1;
+  const status = verificationStatus(value.municipality);
 
   return (
     <div className="space-y-2">
@@ -243,10 +244,21 @@ export function RegionalSelector({ value, onChange }: Props) {
 
       {/* Section 7 asks for the verification date to be visible, not buried
           in the answer. A reader deciding whether to trust a setback figure
-          should see the corpus's status before they ask, not after. */}
-      {value.municipality && (
-        <p className="text-xs text-muted-foreground">
-          {verificationLabel(value.municipality)}
+          should see the corpus's status before they ask, not after - and an
+          UNVERIFIED corpus is a warning, so it is not styled as quiet
+          supporting text the eye skips. */}
+      {status && (
+        <p
+          className={
+            status.verified
+              ? "text-xs text-muted-foreground"
+              : "flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200"
+          }
+        >
+          {!status.verified && (
+            <AlertCircle className="mt-0.5 size-3 shrink-0" aria-hidden />
+          )}
+          <span>{status.label}</span>
         </p>
       )}
     </div>
