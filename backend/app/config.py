@@ -40,14 +40,33 @@ class Settings(BaseSettings):
     supabase_anon_key: SecretStr | None = None
 
     # ---- Model providers ---------------------------------------------
-    openai_api_key: SecretStr | None = None
-    embedding_model: str = "text-embedding-3-small"
+    # Embeddings run on Gemini rather than the OpenAI model named in
+    # Section 1, at user direction: the free tier needs no prepayment.
+    # 1536 is a supported Matryoshka output size, so VECTOR(1536) and the
+    # cosine index are unaffected by the switch.
+    gemini_api_key: SecretStr | None = None
+    embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 1536
 
+    # Gemini's free tier counts each embedded TEXT against a per-minute
+    # quota (observed 100/min), not each HTTP request, so the ingestion
+    # pipeline paces itself. Raise this on a paid tier.
+    embedding_items_per_minute: int = 100
+
+    # Retained so an OpenAI key can be reinstated without a code change.
+    openai_api_key: SecretStr | None = None
+
     groq_api_key: SecretStr | None = None
-    llm_model: str = "llama-3.3-70b-versatile"
+    # Section 1 names llama-3.3-70b-versatile, which Groq has since
+    # removed entirely (the API returns model_not_found). Replaced at
+    # user direction after checking the live model list.
+    llm_model: str = "qwen/qwen3.8-27b"
     llm_temperature: float = 0.1
-    llm_max_tokens: int = 2048
+    # Groq's free tier caps qwen at 1000 OUTPUT tokens per minute, and
+    # rejects a request up front whose max_tokens exceeds that ceiling
+    # rather than truncating it. 800 leaves headroom for the reasoning
+    # tokens this model also counts. Raise it on a paid tier.
+    llm_max_tokens: int = 800
 
     # ---- Retrieval ---------------------------------------------------
     # Mirrors the RPC defaults in 001_init_schema.sql. Keep them in step:

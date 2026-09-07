@@ -1,12 +1,17 @@
 """FastAPI entry point.
 
-Phase 1 scope: application shell, structured logging, CORS, and health
-checks. The /stream SSE route and the retrieval services land in Phase 3 —
-this module deliberately exposes no query surface yet.
+Application shell, structured logging, CORS, health checks, and the
+/stream SSE route that answers one question about one municipality.
+
+/stream wires the Phase 3 services together in a fixed order: retrieve
+(hybrid), emit citations, stream generated tokens, then write the audit
+row. Citations go out before the tokens so the reader sees which bylaw
+sections an answer rests on even if they stop reading halfway.
 """
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -14,12 +19,23 @@ from datetime import datetime, timezone
 
 import httpx
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 from app.config import Settings, get_settings
-from app.models.schemas import DependencyStatus, HealthResponse
+from app.models.schemas import (
+    ChatRequest,
+    Chunk,
+    Citation,
+    DependencyStatus,
+    HealthResponse,
+    StreamEventType,
+)
+from app.services.audit_logger import AuditLogger, QueryRecord
+from app.services.rag_engine import GenerationContext, RagEngine
+from app.services.retrieval import HybridRetriever, MunicipalityInfo
 
 VERSION = "0.1.0"
 
@@ -49,6 +65,11 @@ log = structlog.get_logger()
 async def lifespan(app: FastAPI):
     settings = get_settings()
     app.state.http = httpx.AsyncClient(timeout=10.0)
+    # Built once per process: each owns a connection pool, and the
+    # embedder's SDK client is comparatively expensive to construct.
+    app.state.retriever = await HybridRetriever.create(settings)
+    app.state.auditor = await AuditLogger.create(settings)
+    app.state.engine = RagEngine(settings)
     log.info(
         "startup",
         environment=settings.environment,
@@ -67,9 +88,8 @@ app = FastAPI(
     title="Canadian Civic Bylaw & Zoning AI Assistant",
     description=(
         "Retrieval-augmented assistant over Canadian municipal zoning "
-        "bylaws. Launching with Atlantic Canada (New Brunswick, Nova "
-        "Scotia, Prince Edward Island, Newfoundland and Labrador) and "
-        "expanding jurisdiction by jurisdiction."
+        "bylaws. Answers cite the bylaw section they come from, and are "
+        "scoped to one municipality per request."
     ),
     version=VERSION,
     lifespan=lifespan,
@@ -171,19 +191,20 @@ async def readiness(request: Request) -> JSONResponse:
     settings = get_settings()
     deps = [await _check_supabase(settings, request.app.state.http)]
 
-    # Key presence only. Groq and OpenAI are metered, so readiness must not
-    # spend money on every probe; real calls are exercised in Phases 2 and 3.
+    # Key presence only. Groq is metered and Gemini is quota-limited, so
+    # readiness must not spend either on every probe; real calls are
+    # exercised in Phases 2 and 3.
     #
-    # Truthiness, not `is not None`: an env file containing `OPENAI_API_KEY=`
+    # Truthiness, not `is not None`: an env file containing `GEMINI_API_KEY=`
     # parses to SecretStr("") rather than None. SecretStr defines __len__, so
     # an empty one is falsy but not None — checking identity here would report
     # a blank key as healthy, which is exactly the deploy mistake this probe
     # exists to catch.
     deps.append(
         DependencyStatus(
-            name="openai_key",
-            ok=bool(settings.openai_api_key),
-            detail=None if settings.openai_api_key else "OPENAI_API_KEY not set (needed from Phase 2)",
+            name="gemini_key",
+            ok=bool(settings.gemini_api_key),
+            detail=None if settings.gemini_api_key else "GEMINI_API_KEY not set (needed from Phase 2)",
         )
     )
     deps.append(
@@ -207,3 +228,119 @@ async def readiness(request: Request) -> JSONResponse:
         status_code=200 if supabase_ok else 503,
         content=body.model_dump(mode="json"),
     )
+
+
+# ---------------------------------------------------------------------
+#  Chat streaming (Phase 3, Step 5)
+# ---------------------------------------------------------------------
+
+def _citations_for(chunks: list[Chunk], info: MunicipalityInfo) -> list[Citation]:
+    """Build CitationCard payloads from the retrieved chunks.
+
+    `source_url` comes from the chunk's own metadata rather than the
+    municipality row: a bilingual municipality has a different document
+    per language, and linking a French citation to the English PDF would
+    send a reader to a document that does not contain the clause quoted.
+    """
+    citations: list[Citation] = []
+    for chunk in chunks:
+        citations.append(
+            Citation(
+                chunk_id=chunk.id,
+                municipality_name=info.name,
+                bylaw_name=chunk.bylaw_name,
+                section_number=chunk.section_number,
+                section_title=chunk.section_title,
+                page_number=chunk.page_number,
+                source_url=chunk.metadata.get("url") or info.source_url,
+                language=chunk.language,
+            )
+        )
+    return citations
+
+
+def _event(payload: StreamEventType) -> dict:
+    """Wrap one envelope as an SSE frame."""
+    return {
+        "event": payload.type,
+        "data": json.dumps(payload.model_dump(mode="json")["data"]),
+    }
+
+
+@app.post("/stream", tags=["chat"])
+async def stream(request: Request, body: ChatRequest):
+    """Answer one question about one municipality's bylaws, as SSE.
+
+    Citations are emitted BEFORE the tokens. The frontend can then render
+    the source cards while the answer streams in, and - more importantly -
+    a reader who stops reading halfway has still been shown which bylaw
+    sections the answer rests on.
+    """
+    retriever: HybridRetriever = request.app.state.retriever
+    auditor: AuditLogger = request.app.state.auditor
+    engine: RagEngine = request.app.state.engine
+
+    info = await retriever.municipality(body.municipality_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"Unknown municipality: {body.municipality_id}")
+    if not info.is_active:
+        # The registry marks Halifax and Charlottetown inactive for stated
+        # reasons. Answering anyway would cite a source the project has
+        # already judged unusable.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{info.name} is not yet available. Its bylaw source is "
+                "still being verified."
+            ),
+        )
+
+    async def publish():
+        answer_parts: list[str] = []
+        chunks: list[Chunk] = []
+        try:
+            result = await retriever.retrieve(
+                body.query, body.municipality_id, language=body.language
+            )
+            chunks = result.chunks
+
+            yield _event(
+                StreamEventType(type="citations", data=_citations_for(chunks, info))
+            )
+
+            context = GenerationContext(
+                municipality_id=info.id,
+                municipality_name=info.name,
+                province_code=info.province_code,
+                language=body.language,
+                bylaw_last_verified_at=info.bylaw_last_verified_at,
+            )
+
+            async for token in engine.stream(body.query, chunks, context):
+                answer_parts.append(token)
+                yield _event(StreamEventType(type="token", data=token))
+
+            yield _event(StreamEventType(type="done", data=None))
+
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client
+            log.exception("stream_failed", municipality=body.municipality_id)
+            yield _event(
+                StreamEventType(
+                    type="error",
+                    data="The assistant could not complete this answer. Please try again.",
+                )
+            )
+            _ = exc
+        finally:
+            # Audit last, and never let it break a delivered answer.
+            await auditor.record(
+                QueryRecord.from_answer(
+                    municipality_id=body.municipality_id,
+                    user_query=body.query,
+                    chunks=chunks,
+                    response_text="".join(answer_parts),
+                    language=body.language,
+                )
+            )
+
+    return EventSourceResponse(publish())
