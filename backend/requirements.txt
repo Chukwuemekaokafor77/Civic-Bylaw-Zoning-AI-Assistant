@@ -1,7 +1,9 @@
 # ---- API & runtime (Phase 1) ----
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.5
+# google-genai requires >=2.12.5; pinning below that makes the install
+# unresolvable (this broke CI once already).
+pydantic==2.13.5
 pydantic-settings==2.7.1
 httpx==0.28.1
 structlog==24.4.0
@@ -9,7 +11,7 @@ python-dotenv==1.0.1
 
 # ---- Retrieval & generation (Phase 3) ----
 supabase==2.11.0
-openai==1.59.7
+google-genai==2.22.0
 groq==0.15.0
 sse-starlette==2.2.1
 

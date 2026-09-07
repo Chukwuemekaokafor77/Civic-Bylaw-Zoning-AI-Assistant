@@ -1,79 +1,243 @@
 "use client";
 
 /**
- * Cascading Province -> Municipality selector.
+ * Cascading Province -> Municipality selector (Phase 4, Step 1).
  *
- * PHASE 1 SCOPE: structure only. The dropdowns render and are deliberately
- * disabled — no registry fetch, no state, no selection handling. Phase 4,
- * Step 1 wires this to the municipalities registry.
+ * Options come from the registry via the Supabase anon key. Row Level
+ * Security already restricts this to live jurisdictions and active
+ * municipalities, so Halifax and Charlottetown - both marked inactive
+ * because their bylaw sources are unusable - never appear as choices.
  *
- * Design notes carried forward to Phase 4:
- *  - Options come from `provinces` and active `municipalities`, both
- *    readable with the Supabase anon key under RLS, so this needs no
- *    FastAPI round-trip.
- *  - `is_active = false` municipalities must never appear. Halifax and
- *    Charlottetown are currently inactive (see
- *    backend/scripts/municipalities_config.json for why).
- *  - The project targets all of Canada, but launches with Atlantic
- *    Canada. Filter provinces on `is_live` so unlaunched jurisdictions
- *    are not offered.
- *  - A municipality whose `languages` includes "fr" needs a language
- *    control; the Phase 0 bilingual lock makes language part of the
- *    retrieval filter, not a display preference.
+ * Language is a control, not a display preference. The Phase 0 bilingual
+ * lock makes language part of the retrieval filter: a French question
+ * must retrieve French chunks and cite the French document. It is shown
+ * only for municipalities that actually publish in more than one
+ * language, so unilingual ones are not given a pointless dropdown.
  */
 
-import { MapPin } from "lucide-react";
+import { AlertCircle, Globe, Loader2, MapPin } from "lucide-react";
+import { useEffect, useMemo, useRef } from "react";
 
 import {
   Select,
   SelectContent,
+  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  useMunicipalities,
+  useProvinces,
+  verificationLabel,
+  type Municipality,
+} from "@/lib/registry";
 
-/**
- * Placeholder only. Phase 4 reads this from the `provinces` table, which
- * holds all 13 Canadian jurisdictions but exposes just the live ones to
- * the anon key (RLS on `is_live`). Hardcoding the full list here would
- * offer users jurisdictions that return no results.
- */
-const LAUNCH_JURISDICTIONS = [
-  { code: "NB", name: "New Brunswick" },
-  { code: "NS", name: "Nova Scotia" },
-  { code: "PE", name: "Prince Edward Island" },
-  { code: "NL", name: "Newfoundland and Labrador" },
-] as const;
+const LANGUAGE_LABELS: Record<string, string> = {
+  en: "English",
+  fr: "Français",
+};
 
-export function RegionalSelector() {
+export type RegionalSelection = {
+  provinceCode: string | null;
+  municipality: Municipality | null;
+  language: string;
+};
+
+type Props = {
+  value: RegionalSelection;
+  onChange: (next: RegionalSelection) => void;
+};
+
+function FieldError({ message }: { message: string }) {
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-      <div className="flex-1 space-y-1.5">
-        <label
-          htmlFor="province"
-          className="flex items-center gap-1.5 text-sm font-medium"
-        >
-          <MapPin className="size-3.5" aria-hidden />
-          Province
-        </label>
-        <Select disabled>
-          <SelectTrigger id="province" className="w-full">
-            <SelectValue placeholder={`Select a province (${LAUNCH_JURISDICTIONS.length})`} />
-          </SelectTrigger>
-          <SelectContent />
-        </Select>
+    <p className="flex items-start gap-1.5 text-xs text-destructive">
+      <AlertCircle className="mt-0.5 size-3 shrink-0" aria-hidden />
+      <span>{message}</span>
+    </p>
+  );
+}
+
+export function RegionalSelector({ value, onChange }: Props) {
+  // Held in a ref so the correction effect below does not depend on the
+  // caller passing a stable onChange identity. Assigned in an effect
+  // rather than during render, which React forbids.
+  const onChangeRef = useRef(onChange);
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  const provinces = useProvinces();
+  const municipalities = useMunicipalities(value.provinceCode);
+
+  const available = municipalities.data ?? [];
+
+  // Memoised because it is an effect dependency: rebuilding the array each
+  // render would re-run the effect below on every render.
+  const languages = useMemo(
+    () => value.municipality?.languages ?? ["en"],
+    [value.municipality],
+  );
+
+  // A municipality that does not publish in the selected language would
+  // retrieve nothing at all, so fall back rather than leave the selector
+  // in a state that can only produce the "not found" answer.
+  const { municipality, language } = value;
+  useEffect(() => {
+    if (municipality && !languages.includes(language)) {
+      onChangeRef.current({
+        provinceCode: municipality.province_code,
+        municipality,
+        language: languages[0] ?? "en",
+      });
+    }
+  }, [municipality, language, languages]);
+
+  // base-ui's Select yields `string | null`; null means "cleared".
+  function selectProvince(code: string | null) {
+    if (!code) return;
+    // Clearing the municipality is required, not tidiness: keeping a
+    // Fredericton selection while the province reads "Nova Scotia" would
+    // send a request whose province and municipality disagree.
+    onChange({ provinceCode: code, municipality: null, language: "en" });
+  }
+
+  function selectMunicipality(id: string | null) {
+    const chosen = id ? (available.find((m) => m.id === id) ?? null) : null;
+    onChange({
+      ...value,
+      municipality: chosen,
+      language: chosen?.languages?.[0] ?? "en",
+    });
+  }
+
+  const showLanguage = languages.length > 1;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="flex-1 space-y-1.5">
+          <label
+            htmlFor="province"
+            className="flex items-center gap-1.5 text-sm font-medium"
+          >
+            <MapPin className="size-3.5" aria-hidden />
+            Province or territory
+          </label>
+          <Select
+            value={value.provinceCode ?? ""}
+            onValueChange={selectProvince}
+            disabled={provinces.isLoading || Boolean(provinces.error)}
+          >
+            <SelectTrigger id="province" className="w-full">
+              <SelectValue
+                placeholder={
+                  provinces.isLoading ? "Loading…" : "Select a province"
+                }
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {(provinces.data ?? []).map((province) => (
+                <SelectItem key={province.code} value={province.code}>
+                  {province.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex-1 space-y-1.5">
+          <label htmlFor="municipality" className="text-sm font-medium">
+            Municipality
+          </label>
+          <Select
+            value={value.municipality?.id ?? ""}
+            onValueChange={selectMunicipality}
+            disabled={!value.provinceCode || municipalities.isLoading}
+          >
+            <SelectTrigger id="municipality" className="w-full">
+              <SelectValue
+                placeholder={
+                  !value.provinceCode
+                    ? "Select a province first"
+                    : municipalities.isLoading
+                      ? "Loading…"
+                      : available.length === 0
+                        ? "No municipalities available yet"
+                        : "Select a municipality"
+                }
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {available.map((municipality) => (
+                <SelectItem key={municipality.id} value={municipality.id}>
+                  {municipality.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {showLanguage && (
+          <div className="space-y-1.5 sm:w-40">
+            <label
+              htmlFor="language"
+              className="flex items-center gap-1.5 text-sm font-medium"
+            >
+              <Globe className="size-3.5" aria-hidden />
+              Language
+            </label>
+            <Select
+              value={value.language}
+              onValueChange={(language) =>
+                onChange({ ...value, language: language ?? "en" })
+              }
+            >
+              <SelectTrigger id="language" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {languages.map((code) => (
+                  <SelectItem key={code} value={code}>
+                    {LANGUAGE_LABELS[code] ?? code}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </div>
 
-      <div className="flex-1 space-y-1.5">
-        <label htmlFor="municipality" className="text-sm font-medium">
-          Municipality
-        </label>
-        <Select disabled>
-          <SelectTrigger id="municipality" className="w-full">
-            <SelectValue placeholder="Select a province first" />
-          </SelectTrigger>
-          <SelectContent />
-        </Select>
-      </div>
+      {provinces.isLoading && (
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" aria-hidden />
+          Loading the municipality registry…
+        </p>
+      )}
+
+      {provinces.error && (
+        <FieldError message={(provinces.error as Error).message} />
+      )}
+      {municipalities.error && (
+        <FieldError message={(municipalities.error as Error).message} />
+      )}
+
+      {value.provinceCode &&
+        !municipalities.isLoading &&
+        !municipalities.error &&
+        available.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            No municipalities in this province have been indexed yet.
+          </p>
+        )}
+
+      {/* Section 7 asks for the verification date to be visible, not buried
+          in the answer. A reader deciding whether to trust a setback figure
+          should see the corpus's status before they ask, not after. */}
+      {value.municipality && (
+        <p className="text-xs text-muted-foreground">
+          {verificationLabel(value.municipality)}
+        </p>
+      )}
     </div>
   );
 }
