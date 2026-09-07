@@ -76,7 +76,8 @@ class StubStream:
                 yield types.SimpleNamespace(
                     choices=[
                         types.SimpleNamespace(
-                            delta=types.SimpleNamespace(content=delta)
+                            delta=types.SimpleNamespace(content=delta),
+                            finish_reason=None,
                         )
                     ]
                 )
@@ -284,3 +285,73 @@ def test_prompt_demands_ascii_square_brackets_for_citations():
     prompt = build_system_prompt([chunk()], ctx())
     assert "ASCII square brackets" in prompt
     assert "【" in prompt  # named as forbidden, so the model can avoid it
+
+
+# ---------------------------------------------------------------------
+#  Truncation
+#
+#  The free tier caps output below what a long list of zoning conditions
+#  needs. A reply that stops mid-clause reads as a complete answer that
+#  merely omits the remaining requirements - and for a setback or a
+#  lot-coverage rule, the omitted half is the one that matters.
+# ---------------------------------------------------------------------
+
+
+class StubStreamWithFinish:
+    def __init__(self, deltas: list[str], finish: str) -> None:
+        self._deltas = deltas
+        self._finish = finish
+
+    def __aiter__(self):
+        async def gen():
+            for delta in self._deltas:
+                yield types.SimpleNamespace(
+                    choices=[
+                        types.SimpleNamespace(
+                            delta=types.SimpleNamespace(content=delta),
+                            finish_reason=None,
+                        )
+                    ]
+                )
+            yield types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content=None),
+                        finish_reason=self._finish,
+                    )
+                ]
+            )
+
+        return gen()
+
+
+def engine_finishing(reason: str, deltas: list[str]):
+    class Completions:
+        async def create(self, **kwargs):
+            return StubStreamWithFinish(deltas, reason)
+
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=Completions()))
+    return RagEngine(settings(), client=client)  # type: ignore[arg-type]
+
+
+def test_truncated_answer_says_so():
+    engine = engine_finishing("length", ["The lot must be at least 550 m"])
+    answer = run(engine)
+    assert "cut short" in answer
+    assert "do not treat the list above as complete" in answer
+
+
+def test_complete_answer_carries_no_truncation_notice():
+    engine = engine_finishing("stop", ["Kennels are conditional."])
+    assert "cut short" not in run(engine)
+
+
+def test_truncation_notice_is_localised():
+    engine = engine_finishing("length", ["Le lot doit"])
+    answer = run(engine, context=ctx(language="fr"))
+    assert "interrompue" in answer
+
+
+def test_truncated_answer_still_gets_the_disclaimer():
+    engine = engine_finishing("length", ["partial"])
+    assert has_disclaimer(run(engine))

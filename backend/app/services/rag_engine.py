@@ -1,9 +1,10 @@
 """Prompt assembly and Groq streaming (Phase 3, Step 3).
 
 Implements the Section 5 system prompt and guardrails, then streams tokens
-from `llama-3.3-70b-versatile`.
+from the configured Groq model. Section 1 names `llama-3.3-70b-versatile`,
+which Groq has since removed entirely; the current model is set in config.
 
-Three deliberate departures from the literal spec text, each because the
+Four deliberate departures from the literal spec text, each because the
 literal version would produce a less honest answer:
 
 1. The disclaimer is enforced in code, not merely instructed. Rule 6 tells
@@ -23,6 +24,11 @@ literal version would produce a less honest answer:
    when retrieval came back empty. Rule 1 prescribes exact wording; asking
    a model to reproduce a fixed string is strictly worse than returning
    it, and it avoids paying for a call whose answer is already known.
+
+4. A truncated answer says it was truncated. The free tier caps output
+   below what a long list of zoning conditions needs, and a reply that
+   stops mid-clause reads as a complete answer that merely omits the
+   remaining requirements.
 
 The prompt is also parameterised by province rather than hard-coding
 "Atlantic Canada", since Phase 0 locked scope to all of Canada.
@@ -98,6 +104,26 @@ DISCLAIMER_UNVERIFIED = {
 
 # Marker used to detect whether the model already produced the disclaimer.
 _DISCLAIMER_MARKERS = ("*Disclaimer:", "*Avis :", "*Avis:")
+
+# Shown when generation stopped because it ran out of output tokens rather
+# than because the answer was finished. The free tier caps output well
+# below a long list of zoning conditions, and a reply that stops mid-clause
+# reads as a complete answer that simply omits the remaining requirements -
+# which for a setback or a lot-coverage rule is the dangerous half.
+TRUNCATION_NOTICE = {
+    "en": (
+        "\n\n**This answer was cut short** before all the relevant bylaw "
+        "text could be summarised. Ask about a narrower part of the "
+        "question to see the rest, and do not treat the list above as "
+        "complete."
+    ),
+    "fr": (
+        "\n\n**Cette réponse a été interrompue** avant que tout le texte "
+        "pertinent de l'arrêté ait pu être résumé. Posez une question plus "
+        "précise pour voir la suite, et ne considérez pas la liste "
+        "ci-dessus comme complète."
+    ),
+}
 
 SYSTEM_PROMPT = """You are the official Civic Zoning & Bylaw Assistant for Canadian municipalities. You are currently answering for {municipality_name}, {province_name}.
 
@@ -264,6 +290,7 @@ class RagEngine:
 
         system_prompt = build_system_prompt(chunks, context)
         emitted: list[str] = []
+        finish_reason: str | None = None
 
         log.info(
             "generation_started",
@@ -286,7 +313,12 @@ class RagEngine:
                 ],
             )
             async for event in stream:
-                delta = event.choices[0].delta.content if event.choices else None
+                if not event.choices:
+                    continue
+                choice = event.choices[0]
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+                delta = choice.delta.content
                 if delta:
                     emitted.append(delta)
                     yield delta
@@ -294,6 +326,20 @@ class RagEngine:
             raise RagEngineError(f"Groq generation failed: {exc}") from exc
 
         answer = "".join(emitted)
+
+        # "length" means the token budget ran out, not that the model was
+        # done. Saying so is the difference between an incomplete answer
+        # and an answer that looks complete but omits conditions.
+        if finish_reason == "length":
+            log.warning(
+                "generation_truncated",
+                municipality=context.municipality_id,
+                max_tokens=self._settings.llm_max_tokens,
+            )
+            notice = TRUNCATION_NOTICE.get(context.language, TRUNCATION_NOTICE["en"])
+            emitted.append(notice)
+            answer += notice
+            yield notice
 
         # Enforced, not merely requested. See the module docstring.
         if not has_disclaimer(answer):
