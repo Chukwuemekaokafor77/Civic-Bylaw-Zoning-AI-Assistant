@@ -273,7 +273,7 @@
       ],
       "notes": "Served from a CiviclLive CDN; the request redirects to cdnsm5-hosted.civiclive.com, so the ingestion HTTP client must follow redirects. A second identical copy exists under the 'Building & Development/Zoning, Rules Bylaws' path with a 'FINAL' suffix; the shorter root path was chosen because it avoids an unescaped ampersand in the URL. Summerside also publishes an ADU Incentive Policy and ADU Guidebook separately from CS-40 — relevant to secondary-suite questions but out of scope for the zoning corpus unless deliberately added.",
       "numbering": "summerside",
-      "numbering_note": "verified: 510 clauses, none oversized. The heading sits above the number rather than beside it, so the number line is not bold; the province-wide development standards regulations appended at page 163 restart numbering at 1."
+      "numbering_note": "verified: 510 clauses, none oversized. The heading sits above the number rather than beside it, so the number line is not bold. Zone chapter headings become the parent of everything under them: section 15.2 says four dwelling units are permitted and never names R1, so without the parent no question about the R1 zone can reach it."
     },
     {
       "id": "nl_stjohns",

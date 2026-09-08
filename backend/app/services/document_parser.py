@@ -1044,6 +1044,13 @@ def assemble_clauses(
     # the bylaw does not have. They are cited under their section, with
     # the defined term as the heading, which is how a reader finds one.
     enclosing_number: str | None = None
+    # Set by a heading, cleared by the next line that is not a clause. A
+    # section number on the line directly beneath a heading is exempt
+    # from the bold gate; without that, Summerside loses the first
+    # provision of all seventeen of its zone chapters, because the zone
+    # heading above it is consumed as the parent rather than held as a
+    # pending title.
+    after_heading = False
     # Moncton heads a section with its title on the line above the
     # number - "Sight triangle and setback ..." then "111 (1) Minimum
     # yard requirements ...". Held here until a clause claims it.
@@ -1156,7 +1163,14 @@ def assemble_clauses(
             # section number that does not exist.
             clause_match = (
                 scheme.clause.match(stripped)
-                if line.starts_bold or pending_title
+                if line.starts_bold
+                or pending_title
+                # Only where the heading precedes the number. Applied to a
+                # scheme whose headings carry their own number, it lets
+                # ordinary prose under any heading open a clause: Mount
+                # Pearl gained 41 spurious ones and an 18,537-character
+                # blob.
+                or (after_heading and not scheme.clause_titles)
                 else None
             )
             if clause_match:
@@ -1202,6 +1216,7 @@ def assemble_clauses(
                     amendments=list(page.amendments),
                 )
                 enclosing_number = number
+                after_heading = False
                 if not scheme.clause_titles and rest:
                     buffer.append(rest)
                 continue
@@ -1219,6 +1234,7 @@ def assemble_clauses(
                 parent_title = (
                     groups.get("title") or subsection_match.group(2)
                 ).strip()
+                after_heading = True
                 continue
 
             # Fredericton numbers its entries "(203) Utilities means ...".
@@ -1324,6 +1340,7 @@ def assemble_clauses(
                     buffer.extend(pending_title)
                 pending_title = []
 
+            after_heading = False
             if current is not None:
                 buffer.append(stripped)
 
@@ -1496,6 +1513,18 @@ SUBSECTION_STJOHNS = re.compile(
 #: line is not bold and the scheme reads its title from the line above.
 CLAUSE_SUMMERSIDE = re.compile(r"^(\d{1,2}\.\d{1,2}|\d{1,2}\.)\s+(\S.*)$")
 
+#: "Low Density Residential (R1) Zone" - the heading of a zone chapter.
+#: Made the parent of everything under it, not the title of its first
+#: clause: section 15.2 says "Up to four dwelling units are permitted on
+#: each lot" and never names R1, so without this the chunk carries no
+#: indication of which zone it governs - and a question about the R1 zone
+#: cannot reach it.
+SUBSECTION_SUMMERSIDE = re.compile(
+    r"^(?P<title>.{3,60}?\((?P<number>[A-Za-z0-9]{1,5})\)\s*Zone)$",
+    re.IGNORECASE,
+)
+
+
 SCHEMES: dict[str, NumberingScheme] = {
     "paren": NumberingScheme(),
     "moncton": NumberingScheme(
@@ -1529,7 +1558,7 @@ SCHEMES: dict[str, NumberingScheme] = {
     ),
     "summerside": NumberingScheme(
         clause=CLAUSE_SUMMERSIDE,
-        subsection=SUBSECTION_NUMBER,
+        subsection=SUBSECTION_SUMMERSIDE,
         # The heading sits on the line above the number, as in Moncton.
         clause_titles=False,
     ),
