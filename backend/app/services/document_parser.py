@@ -225,8 +225,12 @@ class NumberingScheme:
     page_label: re.Pattern[str] = re.compile(r"^(\d+)\s*[-–]\s*(\d+)$")
     # Amending bylaw marker set in the margin: "Z-5.197".
     amendment: re.Pattern[str] = re.compile(r"^[A-Z]{1,3}-\d+(?:\.\d+)+$")
-    # Zone code used as a matrix column header: "LC", "COR-1", "MX-2".
-    zone_code: re.Pattern[str] = re.compile(r"^[A-Z]{1,5}(?:-\d+)?$")
+    #: A zone code column heading. The leading hyphen is Fredericton's
+    #: overlay column ("-H"): it sits at the end of the sign matrix
+    #: header, and because the header is found by scanning back from the
+    #: end of the line, one unrecognised token there hid the whole
+    #: heading and a row of "P"s was used instead.
+    zone_code: re.Pattern[str] = re.compile(r"^-?[A-Z]{1,5}(?:-\d+)?$")
     # A row label in a permission matrix: "6.4(2)(a)".
     matrix_row: re.Pattern[str] = re.compile(r"^\d+\.\d+(?:\([0-9a-zA-Z]+\))+$")
     # Legend entry: "P = Permitted". Scanned rather than matched, because
@@ -649,6 +653,21 @@ def _find_matrix(lines: list[_Line], scheme: NumberingScheme) -> _Matrix | None:
     return _Matrix(columns=header, source=header_source, rows=rows, consumed=consumed)
 
 
+#: A banner sharing the legend's line: "P = Permitted LIMITED DEVELOPMENT
+#: ZONES", where the last three words head the columns rather than
+#: explain the symbol.
+LEGEND_BANNER_TAIL = re.compile(r"(?:\s+[A-Z][A-Z-]{1,}){2,}$")
+
+
+def _legend_meaning(text: str) -> str:
+    """What a legend symbol means, without the banner beside it.
+
+    Left in, the banner is repeated in every rendered row of the matrix:
+    "CANOPY 6.4(1) - Permitted LIMITED DEVELOPMENT ZONES: I-2, IEX ...".
+    """
+    return LEGEND_BANNER_TAIL.sub("", text.strip()).strip()
+
+
 def _render_matrix(matrix: _Matrix, legend: dict[str, str]) -> list[str]:
     """Render matrix rows as sentences that name the zone for every cell."""
     columns = [(_centre(w), w["text"]) for w in matrix.columns.words]
@@ -761,7 +780,7 @@ def parse_page(
         legend = {}
         for line in lines:
             for found in scheme.legend.finditer(line.text.strip()):
-                legend[found.group(1)] = found.group(2).strip()
+                legend[found.group(1)] = _legend_meaning(found.group(2))
 
         matrix_lines = _render_matrix(matrix, legend)
 
