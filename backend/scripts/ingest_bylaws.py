@@ -67,7 +67,7 @@ from app.services.source_tracker import (  # noqa: E402
     SourceTracker,
     fetch_source,
 )
-from app.services.vector_store import BylawChunkStore  # noqa: E402
+from app.services.vector_store import BylawChunkStore, chunk_fingerprint  # noqa: E402
 
 log = structlog.get_logger("ingest")
 
@@ -306,9 +306,19 @@ async def ingest_source(
         outcome.detail = f"{decision.reason.value}; would embed and upsert"
         return outcome
 
-    # Resume: skip chunks a previous run already embedded and committed.
-    done = await store.embedded_chunk_keys(municipality_id, bylaw_name, language)
-    pending = [p for p in payloads if (p.section_number, p.chunk_index) not in done]
+    # Resume: skip chunks a previous run already embedded, unless the text
+    # has since changed. A parser fix rewrites what a clause says while its
+    # number and index stay put, and skipping on the key alone would leave
+    # the old text embedded for good.
+    done = await store.embedded_chunk_fingerprints(
+        municipality_id, bylaw_name, language
+    )
+    pending = [
+        p
+        for p in payloads
+        if done.get((p.section_number, p.chunk_index))
+        != chunk_fingerprint(p.chunk_content)
+    ]
     outcome.resumed = len(payloads) - len(pending)
 
     # Embed and commit in slices rather than embedding the whole document

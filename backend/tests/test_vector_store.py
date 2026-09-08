@@ -14,7 +14,12 @@ import pytest
 
 from app.config import Settings
 from app.services.chunker import ChunkPayload
-from app.services.vector_store import NATURAL_KEY, TABLE, BylawChunkStore
+from app.services.vector_store import (
+    NATURAL_KEY,
+    TABLE,
+    BylawChunkStore,
+    chunk_fingerprint,
+)
 
 DIMENSIONS = 1024
 
@@ -267,35 +272,63 @@ def test_replace_document_on_empty_input_is_a_no_op():
 # ---------------------------------------------------------------------
 
 
-def test_embedded_chunk_keys_returns_natural_key_parts():
+def test_embedded_chunks_are_fingerprinted_by_their_text():
     store, client = make_store()
     client.tables.setdefault(TABLE, StubTable())
     client.tables[TABLE].existing_rows = [
-        {"section_number": "8.14(4)", "chunk_index": 0},
-        {"section_number": "8.14(4)", "chunk_index": 1},
-        {"section_number": "3(85)", "chunk_index": 0},
+        {"section_number": "8.14(4)", "chunk_index": 0, "chunk_content": "a"},
+        {"section_number": "8.14(4)", "chunk_index": 1, "chunk_content": "b"},
+        {"section_number": "3(85)", "chunk_index": 0, "chunk_content": "a"},
     ]
 
-    keys = asyncio.run(
-        store.embedded_chunk_keys("nb_fredericton", "Zoning By-law Z-5", "fr")
+    done = asyncio.run(
+        store.embedded_chunk_fingerprints(
+            "nb_fredericton", "Zoning By-law Z-5", "fr"
+        )
     )
-    assert keys == {("8.14(4)", 0), ("8.14(4)", 1), ("3(85)", 0)}
+    assert set(done) == {("8.14(4)", 0), ("8.14(4)", 1), ("3(85)", 0)}
+    # Same text, same fingerprint; different text, different fingerprint.
+    assert done[("8.14(4)", 0)] == done[("3(85)", 0)]
+    assert done[("8.14(4)", 1)] != done[("8.14(4)", 0)]
 
 
-def test_embedded_chunk_keys_is_empty_for_a_new_document():
+def test_a_rewritten_chunk_is_not_treated_as_done():
+    """A parser fix changes what a clause says, not where it sits.
+
+    Resuming on the natural key alone would skip those rows for good, and
+    Fredericton's sign matrix would still name its zones "P" and "DA".
+    """
+    store, client = make_store()
+    client.tables.setdefault(TABLE, StubTable())
+    client.tables[TABLE].existing_rows = [
+        {
+            "section_number": "6.4",
+            "chunk_index": 0,
+            "chunk_content": "CANOPY 6.4(1) - Permitted: P, P.",
+        }
+    ]
+
+    done = asyncio.run(store.embedded_chunk_fingerprints("nb_fredericton", "Z-5", "en"))
+    corrected = "CANOPY 6.4(1) - Permitted: I-2, IEX, RT."
+    assert done[("6.4", 0)] != chunk_fingerprint(corrected)
+
+
+def test_embedded_fingerprints_are_empty_for_a_new_document():
     store, client = make_store()
     client.tables.setdefault(TABLE, StubTable())
     client.tables[TABLE].existing_rows = []
-    assert asyncio.run(store.embedded_chunk_keys("x", "y", "en")) == set()
+    assert asyncio.run(store.embedded_chunk_fingerprints("x", "y", "en")) == {}
 
 
-def test_embedded_chunk_keys_excludes_null_embeddings():
+def test_embedded_fingerprints_exclude_null_embeddings():
     """A row without a vector is unfinished work, not completed work."""
     store, client = make_store()
     table = client.tables.setdefault(TABLE, StubTable())
-    table.existing_rows = [{"section_number": "8.1(1)", "chunk_index": 0}]
+    table.existing_rows = [
+        {"section_number": "8.1(1)", "chunk_index": 0, "chunk_content": "x"}
+    ]
 
-    asyncio.run(store.embedded_chunk_keys("nb_fredericton", "Z-5", "en"))
+    asyncio.run(store.embedded_chunk_fingerprints("nb_fredericton", "Z-5", "en"))
     assert table.not_is_filters == [("embedding", "null")]
 
 

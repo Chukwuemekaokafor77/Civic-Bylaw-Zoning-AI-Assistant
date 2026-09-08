@@ -25,6 +25,8 @@ Two invariants this module exists to hold:
 
 from __future__ import annotations
 
+import hashlib
+
 from dataclasses import dataclass
 
 import structlog
@@ -50,6 +52,11 @@ UPSERT_BATCH_SIZE = 100
 class UpsertResult:
     upserted: int
     deleted: int
+
+
+def chunk_fingerprint(text: str) -> str:
+    """Stable hash of a chunk's text, used to tell stale rows from done ones."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class BylawChunkStore:
@@ -121,19 +128,26 @@ class BylawChunkStore:
         )
         return written
 
-    async def embedded_chunk_keys(
+    async def embedded_chunk_fingerprints(
         self,
         municipality_id: str,
         bylaw_name: str,
         language: str,
-    ) -> set[tuple[str, int]]:
-        """Natural-key parts of this document's already-embedded chunks.
+    ) -> dict[tuple[str, int], str]:
+        """This document's embedded chunks, keyed by natural key.
 
         Lets an interrupted ingestion resume instead of restarting. Under a
         capped daily quota that is the difference between converging and
         never finishing: without it, a run that dies partway spends quota
         on embeddings it then discards, and the next run spends it again on
         exactly the same chunks.
+
+        The value is a hash of the stored text, because the natural key
+        alone cannot tell finished work from stale work. A parser fix
+        rewrites what a clause says while its section number and index stay
+        put, and skipping on the key would leave the old text embedded for
+        good: Fredericton's sign matrix named its zones "P" and "DA", and a
+        re-ingestion would have skipped every one of those rows.
 
         Rows with a NULL embedding are excluded - they are unfinished work,
         not completed work.
@@ -145,7 +159,7 @@ class BylawChunkStore:
         while True:
             response = (
                 await self._client.table(TABLE)
-                .select("section_number,chunk_index")
+                .select("section_number,chunk_index,chunk_content")
                 .eq("municipality_id", municipality_id)
                 .eq("bylaw_name", bylaw_name)
                 .eq("language", language)
@@ -159,7 +173,12 @@ class BylawChunkStore:
                 break
             offset += page_size
 
-        return {(row["section_number"], row["chunk_index"]) for row in rows}
+        return {
+            (row["section_number"], row["chunk_index"]): chunk_fingerprint(
+                row.get("chunk_content") or ""
+            )
+            for row in rows
+        }
 
     async def delete_orphaned_chunks(
         self,
