@@ -11,36 +11,60 @@
     {
       "id": "pavillon-jardin-definition",
       "question": "Qu'est-ce qu'un pavillon-jardin?",
-      "expect_sections": ["1"],
-      "expect_text": ["Logement supplémentaire", "cour arrière"],
+      "expect_sections": [
+        "1"
+      ],
+      "expect_text": [
+        "Logement supplémentaire",
+        "cour arrière"
+      ],
       "why": "The verbless French definition form. Nothing matched it until the guillemets were treated as the marker."
     },
     {
       "id": "pavillon-jardin-batiment-accessoire",
       "question": "Est-ce qu'un pavillon-jardin peut être dans un bâtiment accessoire?",
-      "expect_sections": ["95(7)"],
-      "expect_text": ["bâtiment accessoire"],
+      "expect_sections": [
+        "95(7)"
+      ],
+      "expect_text": [
+        "bâtiment accessoire"
+      ],
       "why": "Pairs with garden-suite-count in the English set: the same provision, retrieved in the language it was asked in."
     },
     {
       "id": "poules-arriere-cour",
       "question": "Puis-je élever des poules dans ma cour arrière?",
-      "expect_sections": ["100(1)", "100(2)"],
-      "expect_text": ["poulailler"],
+      "expect_sections": [
+        "100(1)",
+        "100(2)"
+      ],
+      "expect_text": [
+        "poulailler"
+      ],
       "why": "Urban agriculture in French. The English translation of this clause sits on the same physical lines."
     },
     {
       "id": "abattage-poules",
       "question": "Ai-je le droit d'abattre des poules sur mon terrain?",
-      "expect_sections": ["100(5)"],
-      "expect_text": ["interdite"],
+      "expect_sections": [
+        "100(5)"
+      ],
+      "expect_text": [
+        "interdite"
+      ],
       "why": "A one-sentence provision. If the columns bleed, this chunk carries its English twin."
     },
     {
       "id": "amenagement-zones-rurales",
       "question": "Quelles sont les normes applicables aux lots dans les zones rurales?",
-      "expect_sections": ["158", "Table 17.3"],
-      "why": "This page mixes two-column prose above a full-width table, and was interleaving both languages until lines were classified individually."
+      "expect_sections": [
+        "158"
+      ],
+      "why": "This page mixes two-column prose above a full-width table, and was interleaving both languages until lines were classified individually. The table is part of section 158 rather than a clause of its own: its page carries prose too, so it joins the clause flow. expect_text therefore pins the zone codes, which is what the table is for.",
+      "expect_text": [
+        "RR-1",
+        "tableau 17.3"
+      ]
     }
   ]
 }

@@ -241,6 +241,11 @@ class NumberingScheme:
     # row and corrupts the number the whole matrix is cited under.
     matrix_named_rows: bool = False
 
+    # Whether a bracketed clause number is qualified by its parent. In
+    # St. John's zone chapters "(1) PERMITTED USES" appears under every
+    # zone, so the number alone names 43 different provisions.
+    clause_number_takes_parent: bool = False
+
     # Whether a numbered heading carries a title. Fredericton writes
     # "8.14(4) Fences"; Moncton's numbered provisions are paragraphs of
     # running text with no heading at all, so capturing their first line
@@ -1099,8 +1104,25 @@ def assemble_clauses(
                 flush()
                 # "82. 1 (1)" and "111 (1)" are the same citation once
                 # the layout's spacing is taken out: 82.1(1), 111(1).
-                number = re.sub(r"\s+", "", clause_match.group(1))
-                rest = clause_match.group(2).strip()
+                # A scheme may name its groups when one pattern covers
+                # more than one heading shape: St. John's "SECTION 2-
+                # DEFINITIONS" carries the section that its unnumbered
+                # definitions are cited under, and its zone chapters
+                # number their provisions "(1)".
+                named = clause_match.groupdict()
+                raw_number = (
+                    named.get("number") or named.get("part") or clause_match.group(1)
+                )
+                number = re.sub(r"\s+", "", raw_number)
+                if (
+                    scheme.clause_number_takes_parent
+                    and parent_number
+                    and named.get("number")
+                ):
+                    number = f"{parent_number}{number}"
+                rest = (
+                    named.get("title") or named.get("parttitle") or clause_match.group(2)
+                ).strip()
                 # An untitled scheme keeps its first line as text. Read as
                 # a title it would be a truncated sentence, and the clause
                 # body would begin mid-sentence.
@@ -1130,8 +1152,14 @@ def assemble_clauses(
             )
             if subsection_match:
                 flush()
-                parent_number = subsection_match.group(1)
-                parent_title = subsection_match.group(2).strip()
+                # Named groups let a heading put its code after its title
+                # ("MINI HOME PARK (MHP) ZONE") without reversing what
+                # every other scheme means by group 1 and group 2.
+                groups = subsection_match.groupdict()
+                parent_number = groups.get("number") or subsection_match.group(1)
+                parent_title = (
+                    groups.get("title") or subsection_match.group(2)
+                ).strip()
                 continue
 
             # Fredericton numbers its entries "(203) Utilities means ...".
@@ -1383,6 +1411,25 @@ CLAUSE_CBRM = re.compile(r"^(\d{1,2}\.\d{1,2})\.\s+(\S.*)$")
 #: "2. DEFINITIONS" - the part heading, one number and a caps title.
 SUBSECTION_CBRM = re.compile(r"^(\d{1,2})\.\d?\s+([A-Z][A-Z0-9 &/,'\u2019()\-\.]{3,})$")
 
+
+#: St. John's changes structure halfway through. The general provisions
+#: are numbered "1.1" and "3.2.1"; the zone chapters that follow are
+#: headed by the zone itself and their provisions are "(1) PERMITTED
+#: USES". Recognising only the first form left the whole second half -
+#: 98,111 characters of zone standards - inside one clause called
+#: CONFLICTING PROVISIONS.
+CLAUSE_STJOHNS = re.compile(
+    r"^(?:SECTION\s+(?P<part>\d{1,2})\s*[\u2013-]\s*(?P<parttitle>\S.*)"
+    r"|(?P<number>\d{1,2}(?:\.\d{1,2}){1,2}|\(\d{1,2}\))\s+(?P<title>\S.*))$"
+)
+
+#: "MINI HOME PARK (MHP) ZONE". The code in the brackets is what the rest
+#: of the bylaw cites, so it becomes the number and the whole heading the
+#: title.
+SUBSECTION_STJOHNS = re.compile(
+    r"^(?P<title>[A-Z][A-Z0-9 ,\-/&]*)\((?P<number>[A-Z0-9\-]{1,6})\)\s*ZONE$"
+)
+
 SCHEMES: dict[str, NumberingScheme] = {
     "paren": NumberingScheme(),
     "moncton": NumberingScheme(
@@ -1404,6 +1451,14 @@ SCHEMES: dict[str, NumberingScheme] = {
         # table went unrecognised and a row of "P"s was taken for the
         # column headings instead.
         zone_code=re.compile(r"^[A-Z]{1,4}\d{0,2}(?:-\d+)?$"),
+    ),
+    "stjohns": NumberingScheme(
+        clause=CLAUSE_STJOHNS,
+        subsection=SUBSECTION_STJOHNS,
+        # "(1) PERMITTED USES" repeats in all 43 zone chapters, so the
+        # zone code is carried into the citation to keep it unique and
+        # findable: MHP(1) rather than (1).
+        clause_number_takes_parent=True,
     ),
     "dotted3": NumberingScheme(
         clause=CLAUSE_DOTTED3,

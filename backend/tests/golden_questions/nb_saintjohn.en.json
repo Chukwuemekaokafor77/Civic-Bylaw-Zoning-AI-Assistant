@@ -11,36 +11,58 @@
     {
       "id": "secondary-suite-definition",
       "question": "What is a secondary suite?",
-      "expect_sections": ["3.1"],
-      "expect_text": ["additional small dwelling unit"],
+      "expect_sections": [
+        "3.1"
+      ],
+      "expect_text": [
+        "additional small dwelling unit"
+      ],
       "why": "Definitions chapter. 370 definitions were once cited as section 0(N), which this bylaw has no such thing as."
     },
     {
       "id": "rl-zone-exists",
-      "question": "What residential zones are there in Saint John?",
-      "expect_sections": ["2.2"],
-      "expect_text": ["Low-Rise Residential", "RL"],
-      "why": "Pins document currency. A pre-2025 consolidation answers this with R1 and R2 zones that no longer exist."
+      "question": "What is the zone symbol for the Low-Rise Residential zone?",
+      "expect_sections": [
+        "2.2"
+      ],
+      "expect_text": [
+        "Low-Rise Residential",
+        "RL"
+      ],
+      "why": "Pins document currency: a pre-2025 consolidation answers this with the R1 and R2 zones that C.P. 111-183 replaced. Phrased at the zone-symbol table rather than as 'what residential zones are there', which the residential zone chapters answer just as defensibly and which therefore measured ranking rather than currency."
     },
     {
       "id": "fence-height",
       "question": "How tall can I build a fence in my back yard?",
-      "expect_sections": ["5.2"],
-      "expect_text": ["two metres"],
+      "expect_sections": [
+        "5.2"
+      ],
+      "expect_text": [
+        "two metres"
+      ],
       "why": "A title-case heading. Until both heading forms were recognised, this section had no clause of its own and its text sat inside a parking provision."
     },
     {
       "id": "bicycle-parking-threshold",
       "question": "When do I have to provide bicycle parking?",
-      "expect_sections": ["4.5"],
-      "expect_text": ["12 or more new", "5,000 square metres"],
+      "expect_sections": [
+        "4.5"
+      ],
+      "expect_text": [
+        "12 or more new",
+        "5,000 square metres"
+      ],
       "why": "Another title-case heading, and the thresholds are the kind of number an answer must not invent."
     },
     {
       "id": "parking-lot-surfacing",
       "question": "Does a parking lot have to be paved?",
-      "expect_sections": ["4.2(5)"],
-      "expect_text": ["paved surface"],
+      "expect_sections": [
+        "4.2(5)"
+      ],
+      "expect_text": [
+        "paved surface"
+      ],
       "why": "The clause that was 42,672 characters long. It must now hold parking lot standards and nothing else."
     }
   ]

@@ -301,8 +301,8 @@
         }
       ],
       "notes": "The stjohns.ca path is a stable alias that 302s to a dated CDN filename. Store and cite the stable alias, but hash the resolved CDN URL — the resolved filename carries the amendment date and is the cheapest available change signal. Note the alias currently resolves to an August 2026 amendment while the site elsewhere describes a May 2026 version, so the alias is the fresher of the two. Development Regulations Appendices are a separate PDF and are not included here.",
-      "numbering": "dotted2",
-      "numbering_note": "254 clauses but zone tables swallow into 10.7"
+      "numbering": "stjohns",
+      "numbering_note": "verified: 630 clauses, none oversized. Two structures in one document: numbered general provisions (1.1, 3.2.1) and 43 zone chapters headed by the zone whose provisions are (1) PERMITTED USES, cited with the zone code as MHP(1). Definitions sit under SECTION 2"
     },
     {
       "id": "nl_mountpearl",
