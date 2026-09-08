@@ -49,7 +49,12 @@ import structlog  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
 from app.services.chunker import MunicipalityContext, chunk_clauses  # noqa: E402
-from app.services.document_parser import NumberingScheme, parse_pdf  # noqa: E402
+from app.services.document_parser import (  # noqa: E402
+    SCHEME_HEALTH_MAX_CHARS,
+    parse_pdf,
+    scheme_for,
+    scheme_health,
+)
 from app.services.embedder import (  # noqa: E402
     DEFAULT_BATCH_SIZE,
     Embedder,
@@ -241,14 +246,30 @@ async def ingest_source(
         pdf_path = Path(workdir) / "source.pdf"
         pdf_path.write_bytes(fetched.content)
 
-        clauses = parse_pdf(pdf_path, scheme=NumberingScheme())
+        # Numbering differs per municipality; the registry says which.
+        clauses = parse_pdf(pdf_path, scheme=scheme_for(entry.get("numbering")))
         outcome.clauses = len(clauses)
+        health = scheme_health(clauses)
 
     if not clauses:
         outcome.status = "no_clauses"
         outcome.detail = (
             "parser produced no clauses - the numbering scheme likely does "
             "not match this municipality's document"
+        )
+        return outcome
+
+    # A scheme that fits only part of a document still produces clauses,
+    # each absorbing everything up to the next heading it recognises. That
+    # text then carries the wrong section number, so an answer quoting it
+    # cites a provision it did not come from. Refuse rather than publish it.
+    if not health["healthy"] and not force:
+        outcome.status = "unhealthy_parse"
+        outcome.detail = (
+            f"{health['oversized']} clause(s) over "
+            f"{SCHEME_HEALTH_MAX_CHARS:,} characters (largest {health['max']:,}); "
+            "the numbering scheme does not fit this document. Re-run with "
+            "--force to ingest anyway."
         )
         return outcome
 

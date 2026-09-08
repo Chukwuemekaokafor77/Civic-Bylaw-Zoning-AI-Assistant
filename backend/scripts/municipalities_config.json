@@ -84,7 +84,9 @@
           "http_checked_at": "2026-09-06"
         }
       ],
-      "notes": "Cleanest bilingual case in the set: fully separate EN and FR documents, so language tagging is a property of the source file rather than a parsing problem. Amendments (Z-5.312, Z-5.338, Z-5.358 and others) are published as separate PDFs, so the base consolidation may lag council decisions. Phase 2 must decide whether amendments are ingested as their own documents or whether only the consolidation is trusted."
+      "notes": "Cleanest bilingual case in the set: fully separate EN and FR documents, so language tagging is a property of the source file rather than a parsing problem. Amendments (Z-5.312, Z-5.338, Z-5.358 and others) are published as separate PDFs, so the base consolidation may lag council decisions. Phase 2 must decide whether amendments are ingested as their own documents or whether only the consolidation is trusted.",
+      "numbering": "paren",
+      "numbering_note": "verified: 585 clauses, golden eval 17/17"
     },
     {
       "id": "nb_moncton",
@@ -121,7 +123,9 @@
           "http_checked_at": "2026-09-06"
         }
       ],
-      "notes": "PHASE 2 RISK: both language rows point at the SAME file. Moncton publishes one interleaved bilingual document with English and French presented together, not two separate PDFs. The parser must therefore split languages out of a single PDF and tag each chunk, rather than inheriting language from the file. This is the hardest ingestion case in the set and should be built after Fredericton, which is the easy bilingual case. Amendments (Z-222.47 through Z-222.60) are published separately."
+      "notes": "PHASE 2 RISK: both language rows point at the SAME file. Moncton publishes one interleaved bilingual document with English and French presented together, not two separate PDFs. The parser must therefore split languages out of a single PDF and tag each chunk, rather than inheriting language from the file. This is the hardest ingestion case in the set and should be built after Fredericton, which is the easy bilingual case. Amendments (Z-222.47 through Z-222.60) are published separately.",
+      "numbering": "paren",
+      "numbering_note": "bilingual interleaved columns, not yet parseable"
     },
     {
       "id": "nb_saintjohn",
@@ -147,7 +151,9 @@
           "http_checked_at": "2026-09-06"
         }
       ],
-      "notes": "HIGHEST STALENESS CONSEQUENCE IN THE SET. By-law C.P. 111-183 (third reading January 2025) merged the One-Unit (R1), Two-Unit (R2) and Suburban Residential (RSS) zones into a single Low-Rise Residential (RL) zone permitting up to four units per lot in Primary Development Areas and six in Intensification Areas. Any pre-2025 copy would answer secondary-suite and density questions with zones that no longer exist — precisely the questions this assistant is built to answer. The commonly-cited 2021 URL is dead (404) and was discarded. This is a Laserfiche WebLink URL whose numeric docid (804158) is tied to this specific consolidation, so a future consolidation will change the id and this URL will break rather than silently serve stale text — treat a 404 here as a re-ingestion trigger, not an error to retry. No French version located; NB is officially bilingual, so confirm with the City whether one exists before treating en-only as settled."
+      "notes": "HIGHEST STALENESS CONSEQUENCE IN THE SET. By-law C.P. 111-183 (third reading January 2025) merged the One-Unit (R1), Two-Unit (R2) and Suburban Residential (RSS) zones into a single Low-Rise Residential (RL) zone permitting up to four units per lot in Primary Development Areas and six in Intensification Areas. Any pre-2025 copy would answer secondary-suite and density questions with zones that no longer exist — precisely the questions this assistant is built to answer. The commonly-cited 2021 URL is dead (404) and was discarded. This is a Laserfiche WebLink URL whose numeric docid (804158) is tied to this specific consolidation, so a future consolidation will change the id and this URL will break rather than silently serve stale text — treat a 404 here as a re-ingestion trigger, not an error to retry. No French version located; NB is officially bilingual, so confirm with the City whether one exists before treating en-only as settled.",
+      "numbering": "paren",
+      "numbering_note": "554 clauses but 6 oversized - zone tables not yet captured"
     },
     {
       "id": "ns_halifax",
@@ -209,7 +215,9 @@
           "http_checked_at": "2026-09-06"
         }
       ],
-      "notes": "The consolidation date is encoded in the URL path, so every amendment produces a new URL and the old one 404s. Change detection cannot rely on hashing a fixed URL here; the ingestion job must re-discover the current link from the CBRM planning page (https://cbrm.ns.ca/business/municipal-planing-land-use-by-laws/) before hashing. CBRM also notes that Municipal Planning Strategy and Land Use By-law documents are not listed on its main By-Laws page, so that page is the wrong discovery target."
+      "notes": "The consolidation date is encoded in the URL path, so every amendment produces a new URL and the old one 404s. Change detection cannot rely on hashing a fixed URL here; the ingestion job must re-discover the current link from the CBRM planning page (https://cbrm.ns.ca/business/municipal-planing-land-use-by-laws/) before hashing. CBRM also notes that Municipal Planning Strategy and Land Use By-law documents are not listed on its main By-Laws page, so that page is the wrong discovery target.",
+      "numbering": "dotted3",
+      "numbering_note": "191 clauses but body uses 'Chapter N.' headings"
     },
     {
       "id": "pe_charlottetown",
@@ -262,7 +270,9 @@
           "http_checked_at": "2026-09-06"
         }
       ],
-      "notes": "Served from a CiviclLive CDN; the request redirects to cdnsm5-hosted.civiclive.com, so the ingestion HTTP client must follow redirects. A second identical copy exists under the 'Building & Development/Zoning, Rules Bylaws' path with a 'FINAL' suffix; the shorter root path was chosen because it avoids an unescaped ampersand in the URL. Summerside also publishes an ADU Incentive Policy and ADU Guidebook separately from CS-40 — relevant to secondary-suite questions but out of scope for the zoning corpus unless deliberately added."
+      "notes": "Served from a CiviclLive CDN; the request redirects to cdnsm5-hosted.civiclive.com, so the ingestion HTTP client must follow redirects. A second identical copy exists under the 'Building & Development/Zoning, Rules Bylaws' path with a 'FINAL' suffix; the shorter root path was chosen because it avoids an unescaped ampersand in the URL. Summerside also publishes an ADU Incentive Policy and ADU Guidebook separately from CS-40 — relevant to secondary-suite questions but out of scope for the zoning corpus unless deliberately added.",
+      "numbering": "dotted2",
+      "numbering_note": "418 clauses but 3 oversized - not yet verified"
     },
     {
       "id": "nl_stjohns",
@@ -289,7 +299,9 @@
           "resolved_url": "https://media-003-ca.cdn.govstack.com/stjohns-ca/media/4bajao0x/development-regulations_word-layout-august-26-2026.pdf"
         }
       ],
-      "notes": "The stjohns.ca path is a stable alias that 302s to a dated CDN filename. Store and cite the stable alias, but hash the resolved CDN URL — the resolved filename carries the amendment date and is the cheapest available change signal. Note the alias currently resolves to an August 2026 amendment while the site elsewhere describes a May 2026 version, so the alias is the fresher of the two. Development Regulations Appendices are a separate PDF and are not included here."
+      "notes": "The stjohns.ca path is a stable alias that 302s to a dated CDN filename. Store and cite the stable alias, but hash the resolved CDN URL — the resolved filename carries the amendment date and is the cheapest available change signal. Note the alias currently resolves to an August 2026 amendment while the site elsewhere describes a May 2026 version, so the alias is the fresher of the two. Development Regulations Appendices are a separate PDF and are not included here.",
+      "numbering": "dotted2",
+      "numbering_note": "254 clauses but zone tables swallow into 10.7"
     },
     {
       "id": "nl_mountpearl",
@@ -315,7 +327,12 @@
           "http_checked_at": "2026-09-06"
         }
       ],
-      "notes": "The newest consolidation discoverable is dated 2017-04-13 — roughly nine years old, by far the oldest in the set. The URL resolves and the document is real, but nine years of amendments may exist outside it. This is the entry where a dated disclaimer matters most, and a strong argument for confirming currency with Mount Pearl planning staff before is_active stays true. Mount Pearl also publishes topic bulletins, including one specifically on subsidiary (basement) apartments, which is directly on-topic for ADU questions and worth considering as a supplementary source."
+      "notes": "The newest consolidation discoverable is dated 2017-04-13 — roughly nine years old, by far the oldest in the set. The URL resolves and the document is real, but nine years of amendments may exist outside it. This is the entry where a dated disclaimer matters most, and a strong argument for confirming currency with Mount Pearl planning staff before is_active stays true. Mount Pearl also publishes topic bulletins, including one specifically on subsidiary (basement) apartments, which is directly on-topic for ADU questions and worth considering as a supplementary source.",
+      "numbering": "dotted3",
+      "numbering_note": "verified: 395 clauses, no oversized clause"
     }
-  ]
+  ],
+  "scheme_notes": {
+    "how_to_add": "numbering selects a NumberingScheme from app/services/document_parser.SCHEMES. Derive it from the real PDF and confirm with scheme_health(): a scheme that matches only some headings still produces clauses, each swallowing everything up to the next match, so clause count alone does not show whether it fits."
+  }
 }

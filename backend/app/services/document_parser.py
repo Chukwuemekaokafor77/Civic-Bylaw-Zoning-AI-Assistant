@@ -110,6 +110,32 @@ def _is_superscript(word: dict, previous: dict) -> bool:
     return smaller and raised
 
 
+SCHEME_HEALTH_MAX_CHARS = 12_000
+
+
+def scheme_health(clauses: list["Clause"]) -> dict:
+    """Summary used to judge whether a numbering scheme actually fits.
+
+    Clause count alone is misleading. A scheme that matches only some
+    headings still produces clauses - each one swallowing everything up to
+    the next match - so a 100,000-character "clause" means the scheme is
+    wrong even though the parse "succeeded". Fredericton's definitions
+    chapter failed exactly this way at 58,000 characters.
+    """
+    if not clauses:
+        return {"clauses": 0, "median": 0, "max": 0, "oversized": 0, "healthy": False}
+
+    lengths = sorted(len(c.text) for c in clauses)
+    oversized = sum(1 for n in lengths if n > SCHEME_HEALTH_MAX_CHARS)
+    return {
+        "clauses": len(clauses),
+        "median": lengths[len(lengths) // 2],
+        "max": lengths[-1],
+        "oversized": oversized,
+        "healthy": oversized == 0 and len(clauses) > 20,
+    }
+
+
 def _strip_accents(text: str) -> str:
     """Fold accented characters to their base letters, for matching only.
 
@@ -124,16 +150,32 @@ def _strip_accents(text: str) -> str:
 class NumberingScheme:
     """Regexes describing one municipality's clause numbering.
 
-    Fredericton's defaults are below. Saint John and CBRM get their own
-    schemes as they are onboarded rather than edits to this one.
+    Fredericton's conventions are the defaults. Other municipalities pick
+    a named variant from SCHEMES below rather than editing these, because
+    a change here silently re-parses every already-verified corpus.
     """
 
     # "8.14(4) Standards" — the citable clause level.
     clause: re.Pattern[str] = re.compile(r"^(\d+\.\d+\(\d+[a-z]?\))\s*(.*)$")
     # "2.1 OPERATION" — the subsection heading above clauses.
     subsection: re.Pattern[str] = re.compile(r"^(\d+\.\d+)\s+([A-Z][A-Z0-9 &/,'’()\-\.]{3,})$")
-    # "(203) Utilities means ..." — Section 3 definition entries.
+    # "(203) Utilities means ..." — numbered definition entries (Z-5).
     definition: re.Pattern[str] = re.compile(r"^\((\d+)\)\s+(.+)$")
+
+    # Unnumbered definitions: `<term> means <text>`. Every bylaw in the
+    # pilot set outside Fredericton defines terms this way and numbers
+    # none of them - Saint John writes '"block" means ...', Mount Pearl
+    # '"LOT FRONTAGE" means ...', St. John's 'PLACE OF ASSEMBLY means ...'.
+    # Without this, a definitions chapter matches nothing and accumulates
+    # onto the previous clause: Saint John produced a single 105,000-
+    # character "clause" that way, far past the embedding input limit and
+    # mis-citing every term inside it.
+    definition_by_means: re.Pattern[str] = re.compile(
+        "^[\"\u201c\u2018']?"                    # optional opening quote
+        "([A-Za-z][^\"\u201c\u201d\u2018\u2019]{1,70}?)"  # the defined term
+        "[\"\u201d\u2019']?"                     # optional closing quote
+        r"\s+means\b"                        # the defining verb
+    )
     # Running header: "Section 8 Low Density Residential Zones RR-CH", or
     # its French form "PARTIE I Section 3 Définitions". The French edition
     # prefixes the part in Roman numerals, so anchoring on "Section" alone
@@ -682,6 +724,7 @@ def parse_pdf(
     parent_title: str | None = None
     part_number: str | None = None
     part_title: str | None = None
+    definition_index = 0
     skipped_toc = 0
 
     def flush() -> None:
@@ -742,32 +785,11 @@ def parse_pdf(
                 if not stripped:
                     continue
 
-                # Section 3 numbers its entries "(203) Utilities means ..."
-                # rather than "X.Y(N)". Without this branch the whole
-                # definitions chapter accumulates onto the last clause of
-                # Section 2 - one 58,000-character blob that exceeds the
-                # embedding input limit and cites the wrong section for
-                # every term in it.
-                if in_definitions:
-                    definition = scheme.definition.match(stripped)
-                    if definition:
-                        flush()
-                        number, body = definition.group(1), definition.group(2).strip()
-                        current = Clause(
-                            section_number=f"{part_number}({number})",
-                            section_title=_definition_term(body),
-                            text="",
-                            page_number=page.page_number,
-                            page_label=page.page_label,
-                            part_number=part_number,
-                            part_title=part_title,
-                            parent_number=part_number,
-                            parent_title=part_title,
-                            amendments=list(page.amendments),
-                        )
-                        buffer.append(body)
-                        continue
-
+                # Order matters. A numbered heading wins over anything
+                # else on the line, then the subsection heading, and only
+                # then the two definition forms - otherwise a heading whose
+                # title happens to contain "means" would open a definition
+                # instead of a clause.
                 clause_match = (
                     scheme.clause.match(stripped) if line.starts_bold else None
                 )
@@ -795,6 +817,60 @@ def parse_pdf(
                     flush()
                     parent_number = subsection_match.group(1)
                     parent_title = subsection_match.group(2).strip()
+                    continue
+
+                # Fredericton numbers its entries "(203) Utilities means
+                # ...". Without this branch the whole definitions chapter
+                # accumulates onto the last clause of the previous section
+                # - one 58,000-character blob that exceeds the embedding
+                # input limit and cites the wrong section for every term.
+                if in_definitions:
+                    definition = scheme.definition.match(stripped)
+                    if definition:
+                        flush()
+                        number, body = definition.group(1), definition.group(2).strip()
+                        current = Clause(
+                            section_number=f"{part_number}({number})",
+                            section_title=_definition_term(body),
+                            text="",
+                            page_number=page.page_number,
+                            page_label=page.page_label,
+                            part_number=part_number,
+                            part_title=part_title,
+                            parent_number=part_number,
+                            parent_title=part_title,
+                            amendments=list(page.amendments),
+                        )
+                        buffer.append(body)
+                        continue
+
+                # Unnumbered `<term> means ...`, checked regardless of
+                # whether the running header names a definitions chapter:
+                # only Fredericton labels its header that way, and the
+                # other bylaws would never reach this branch otherwise.
+                # The bold requirement is what keeps it honest - running
+                # prose containing "means" is not bold-started.
+                by_means = (
+                    scheme.definition_by_means.match(stripped)
+                    if line.starts_bold
+                    else None
+                )
+                if by_means is not None:
+                    flush()
+                    definition_index += 1
+                    current = Clause(
+                        section_number=f"{part_number or '0'}({definition_index})",
+                        section_title=by_means.group(1).strip(),
+                        text="",
+                        page_number=page.page_number,
+                        page_label=page.page_label,
+                        part_number=part_number,
+                        part_title=part_title,
+                        parent_number=part_number,
+                        parent_title=part_title,
+                        amendments=list(page.amendments),
+                    )
+                    buffer.append(stripped)
                     continue
 
                 if current is not None:
@@ -856,3 +932,43 @@ def source_hash(path: str | Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+# ---------------------------------------------------------------------
+#  Named schemes
+#
+#  Selected per municipality by `numbering` in municipalities_config.json.
+#  Measured against the real documents, not assumed: the counts in each
+#  comment come from parsing the published PDF.
+# ---------------------------------------------------------------------
+
+#: "8.14(4) Standards" - Fredericton Z-5 and Saint John ZoneSJ.
+CLAUSE_PAREN = re.compile(r"^(\d+\.\d+\(\d+[a-z]?\))\s*(.*)$")
+
+#: "1.2.1 Words and phrases" - Mount Pearl, CBRM.
+CLAUSE_DOTTED3 = re.compile(r"^(\d+\.\d+\.\d+)\s+(.*)$")
+
+#: "1.1 Short Title" - Summerside, St. John's.
+CLAUSE_DOTTED2 = re.compile(r"^(\d+\.\d+)\s+(.*)$")
+
+SUBSECTION_DOTTED = re.compile(r"^(\d+\.\d+)\s+([A-Z][A-Za-z0-9 &/,'’()\-\.]{3,})$")
+SUBSECTION_NUMBER = re.compile(r"^(\d+)\s+([A-Z][A-Z0-9 &/,'’()\-\.]{3,})$")
+
+SCHEMES: dict[str, NumberingScheme] = {
+    "paren": NumberingScheme(),
+    "dotted3": NumberingScheme(
+        clause=CLAUSE_DOTTED3,
+        subsection=SUBSECTION_DOTTED,
+    ),
+    "dotted2": NumberingScheme(
+        clause=CLAUSE_DOTTED2,
+        subsection=SUBSECTION_NUMBER,
+    ),
+}
+
+DEFAULT_SCHEME = "paren"
+
+
+def scheme_for(name: str | None) -> NumberingScheme:
+    """Look up a named scheme, falling back to Fredericton's."""
+    return SCHEMES.get(name or DEFAULT_SCHEME, SCHEMES[DEFAULT_SCHEME])
