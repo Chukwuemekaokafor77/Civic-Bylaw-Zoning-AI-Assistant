@@ -51,6 +51,7 @@ from app.config import get_settings  # noqa: E402
 from app.services.chunker import MunicipalityContext, chunk_clauses  # noqa: E402
 from app.services.document_parser import (  # noqa: E402
     SCHEME_HEALTH_MAX_CHARS,
+    parse_bilingual_pdf,
     parse_pdf,
     scheme_for,
     scheme_health,
@@ -151,16 +152,23 @@ def sources_for(entry: dict) -> list[dict]:
     return []
 
 
-def deduplicate_sources(sources: list[dict]) -> list[dict]:
+def deduplicate_sources(sources: list[dict], entry: dict) -> list[dict]:
     """Collapse languages that share one physical document.
 
-    Moncton registers EN and FR against the SAME interleaved PDF. Fetching
-    and embedding it twice would double the cost and write two chunk sets
-    whose text is identical but whose `language` differs, so a French query
-    could retrieve the English row and cite it as French law. Splitting that
-    document by language is a parser problem (flagged in the registry), not
-    something a second download solves.
+    Two language rows pointing at one URL used to mean the second row was
+    the same text over again, so embedding both would let a French query
+    retrieve an English row and cite it as French law.
+
+    That is no longer true of a document the parser can separate. Moncton
+    registers EN and FR against the same interleaved PDF, and each language
+    is now parsed out of its own column, so both rows carry real and
+    different text. The registry says which documents those are; the
+    document is fetched once per language, which is one extra download
+    against a corpus that would otherwise be half missing.
     """
+    if entry.get("interleaved_bilingual"):
+        return list(sources)
+
     seen: dict[str, dict] = {}
     collapsed: list[dict] = []
     for source in sources:
@@ -168,9 +176,9 @@ def deduplicate_sources(sources: list[dict]) -> list[dict]:
         if url in seen:
             seen[url].setdefault("_also_languages", []).append(source["language"])
             continue
-        entry = dict(source)
-        seen[url] = entry
-        collapsed.append(entry)
+        entry_copy = dict(source)
+        seen[url] = entry_copy
+        collapsed.append(entry_copy)
     return collapsed
 
 
@@ -247,7 +255,15 @@ async def ingest_source(
         pdf_path.write_bytes(fetched.content)
 
         # Numbering differs per municipality; the registry says which.
-        clauses = parse_pdf(pdf_path, scheme=scheme_for(entry.get("numbering")))
+        scheme = scheme_for(entry.get("numbering"))
+        if entry.get("interleaved_bilingual"):
+            # One document, both languages, side by side on every line.
+            # Parsing it as a single stream would put half the French in
+            # the English chunks and cite each in the wrong language.
+            corpora = parse_bilingual_pdf(pdf_path, scheme=scheme)
+            clauses = corpora.get(language, [])
+        else:
+            clauses = parse_pdf(pdf_path, scheme=scheme)
         outcome.clauses = len(clauses)
         health = scheme_health(clauses)
 
@@ -380,7 +396,7 @@ async def run(args: argparse.Namespace) -> int:
 
         await sync_registry(store._client, entry)
 
-        sources = deduplicate_sources(sources_for(entry))
+        sources = deduplicate_sources(sources_for(entry), entry)
         if not sources:
             summary.add(
                 SourceOutcome(entry["id"], "-", "-", "no_source",

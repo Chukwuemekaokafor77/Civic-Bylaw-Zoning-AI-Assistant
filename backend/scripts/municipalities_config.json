@@ -101,6 +101,7 @@
       "source_bylaw_name": "By-law Z-222 Zoning By-law",
       "source_url": "https://www5.moncton.ca/docs/bylaws/By-Law_Z-222_Zoning_Arrete_zonage.pdf",
       "bylaw_last_verified_at": null,
+  "interleaved_bilingual": true,
       "sources": [
         {
           "language": "en",
@@ -124,8 +125,8 @@
         }
       ],
       "notes": "PHASE 2 RISK: both language rows point at the SAME file. Moncton publishes one interleaved bilingual document with English and French presented together, not two separate PDFs. The parser must therefore split languages out of a single PDF and tag each chunk, rather than inheriting language from the file. This is the hardest ingestion case in the set and should be built after Fredericton, which is the easy bilingual case. Amendments (Z-222.47 through Z-222.60) are published separately.",
-      "numbering": "paren",
-      "numbering_note": "bilingual interleaved columns, not yet parseable"
+      "numbering": "moncton",
+      "numbering_note": "verified: 545 en / 546 fr clauses, none oversized; sections run straight through the document rather than per chapter"
     },
     {
       "id": "nb_saintjohn",
