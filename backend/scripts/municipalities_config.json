@@ -86,7 +86,7 @@
       ],
       "notes": "Cleanest bilingual case in the set: fully separate EN and FR documents, so language tagging is a property of the source file rather than a parsing problem. Amendments (Z-5.312, Z-5.338, Z-5.358 and others) are published as separate PDFs, so the base consolidation may lag council decisions. Phase 2 must decide whether amendments are ingested as their own documents or whether only the consolidation is trusted.",
       "numbering": "paren",
-      "numbering_note": "verified: 585 clauses, golden eval 17/17"
+      "numbering_note": "verified: 585 clauses, golden eval 17/17. One clause exceeds the health ceiling - 5.2(12) Required Parking at 12,884 characters - and was inspected: it is the parking section with its rate tables, not absorbed text, so it is ingested with --force."
     },
     {
       "id": "nb_moncton",
@@ -126,7 +126,7 @@
       ],
       "notes": "PHASE 2 RISK: both language rows point at the SAME file. Moncton publishes one interleaved bilingual document with English and French presented together, not two separate PDFs. The parser must therefore split languages out of a single PDF and tag each chunk, rather than inheriting language from the file. This is the hardest ingestion case in the set and should be built after Fredericton, which is the easy bilingual case. Amendments (Z-222.47 through Z-222.60) are published separately.",
       "numbering": "moncton",
-      "numbering_note": "verified: 545 en / 546 fr clauses, none oversized; sections run straight through the document rather than per chapter"
+      "numbering_note": "verified: 549 en / 548 fr clauses, none oversized. One interleaved bilingual document split at the gutter. Sections run straight through rather than per chapter, the heading sits above the number, and the definitions are unnumbered so they cite section 1."
     },
     {
       "id": "nb_saintjohn",
@@ -272,8 +272,8 @@
         }
       ],
       "notes": "Served from a CiviclLive CDN; the request redirects to cdnsm5-hosted.civiclive.com, so the ingestion HTTP client must follow redirects. A second identical copy exists under the 'Building & Development/Zoning, Rules Bylaws' path with a 'FINAL' suffix; the shorter root path was chosen because it avoids an unescaped ampersand in the URL. Summerside also publishes an ADU Incentive Policy and ADU Guidebook separately from CS-40 — relevant to secondary-suite questions but out of scope for the zoning corpus unless deliberately added.",
-      "numbering": "dotted2",
-      "numbering_note": "418 clauses but 3 oversized - not yet verified"
+      "numbering": "summerside",
+      "numbering_note": "verified: 510 clauses, none oversized. The heading sits above the number rather than beside it, so the number line is not bold; the province-wide development standards regulations appended at page 163 restart numbering at 1."
     },
     {
       "id": "nl_stjohns",
@@ -330,7 +330,7 @@
       ],
       "notes": "The newest consolidation discoverable is dated 2017-04-13 — roughly nine years old, by far the oldest in the set. The URL resolves and the document is real, but nine years of amendments may exist outside it. This is the entry where a dated disclaimer matters most, and a strong argument for confirming currency with Mount Pearl planning staff before is_active stays true. Mount Pearl also publishes topic bulletins, including one specifically on subsidiary (basement) apartments, which is directly on-topic for ADU questions and worth considering as a supplementary source.",
       "numbering": "dotted3",
-      "numbering_note": "verified: 395 clauses, no oversized clause"
+      "numbering_note": "verified: 400 clauses, none oversized. The twenty-five pages of amendment register at the back are skipped: every insertion they record already appears in the consolidated body, and their entries carry no section number of their own."
     }
   ],
   "scheme_notes": {

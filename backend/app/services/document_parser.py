@@ -952,6 +952,33 @@ def _looks_like_term_index(page: ParsedPage) -> bool:
     entries = sum(1 for text in lines if TERM_INDEX_ENTRY.match(text))
     return entries / len(lines) >= TERM_INDEX_RATIO
 
+
+#: The header of an amendment register, repeated on every page of one.
+REGISTER_DATE_HEADER = re.compile(r"\bPublished\s+Date\b", re.IGNORECASE)
+REGISTER_AMENDMENT_HEADER = re.compile(r"\bAmendment\b", re.IGNORECASE)
+REGISTER_HEADER_LINES = 8
+
+
+def _looks_like_amendment_register(page: ParsedPage) -> bool:
+    """A log of past amendments rather than the regulations themselves.
+
+    Mount Pearl appends twenty-five pages recording each amendment and
+    the text it inserted. Every one of those insertions already appears
+    in the consolidated body - "INDOOR PARKING FACILITIES" is defined on
+    page 10 and recorded again on page 179 - so parsing the register
+    duplicates provisions and, because its entries carry no section
+    number of their own, files them under whatever section came last. Two
+    clauses of 14,030 and 13,304 characters were built that way.
+
+    Recognised by the table header the register repeats on every page,
+    which the front matter does not carry even where it names an
+    amendment.
+    """
+    top = [ln.text for ln in page.lines[:REGISTER_HEADER_LINES]]
+    return any(REGISTER_DATE_HEADER.search(t) for t in top) and any(
+        REGISTER_AMENDMENT_HEADER.search(t) for t in top
+    )
+
 def assemble_clauses(
     pages: list[ParsedPage],
     scheme: NumberingScheme,
@@ -1005,6 +1032,7 @@ def assemble_clauses(
             or _looks_like_contents(page)
             or _looks_like_term_index(page)
             or _looks_like_divider(page)
+            or _looks_like_amendment_register(page)
         ):
             skipped_toc += 1
             continue
@@ -1430,6 +1458,13 @@ SUBSECTION_STJOHNS = re.compile(
     r"^(?P<title>[A-Z][A-Z0-9 ,\-/&]*)\((?P<number>[A-Z0-9\-]{1,6})\)\s*ZONE$"
 )
 
+
+#: "15.1", and "1." for the province-wide standards regulations appended
+#: to the bylaw, which restart at 1 with their own numbering. Summerside
+#: sets the heading above the number rather than beside it, so the number
+#: line is not bold and the scheme reads its title from the line above.
+CLAUSE_SUMMERSIDE = re.compile(r"^(\d{1,2}\.\d{1,2}|\d{1,2}\.)\s+(\S.*)$")
+
 SCHEMES: dict[str, NumberingScheme] = {
     "paren": NumberingScheme(),
     "moncton": NumberingScheme(
@@ -1459,6 +1494,12 @@ SCHEMES: dict[str, NumberingScheme] = {
         # zone code is carried into the citation to keep it unique and
         # findable: MHP(1) rather than (1).
         clause_number_takes_parent=True,
+    ),
+    "summerside": NumberingScheme(
+        clause=CLAUSE_SUMMERSIDE,
+        subsection=SUBSECTION_NUMBER,
+        # The heading sits on the line above the number, as in Moncton.
+        clause_titles=False,
     ),
     "dotted3": NumberingScheme(
         clause=CLAUSE_DOTTED3,
