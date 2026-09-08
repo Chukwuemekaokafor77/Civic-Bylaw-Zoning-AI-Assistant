@@ -176,6 +176,38 @@ class NumberingScheme:
         "[\"\u201d\u2019']?"                     # optional closing quote
         r"\s+means\b"                        # the defining verb
     )
+
+    # Quoted definitions, for bylaws that do not set their terms in
+    # bold. Moncton writes: “ bicycle parking space ” means a slot ...
+    # The opening quote is what makes this safe to match without the
+    # bold requirement - it is a deliberate typographic marker, whereas
+    # an unquoted line containing "means" is usually prose. Continuation
+    # lines such as "...secured by means of an 8 inch U lock" match the
+    # unquoted pattern and would otherwise open a bogus definition.
+    definition_quoted: re.Pattern[str] = re.compile(
+        "^[\u201c\u201d\"\u2018\u2019]\\s*"
+        # A full stop bars a quoted sentence ("No parking.") from being
+        # read as a defined term; no term in these bylaws contains one.
+        "([^.“”\"‘’]{1,70}?)"
+        "\\s*[\u201c\u201d\"\u2018\u2019]"
+        # A qualifier may sit between the term and the verb:
+        # "city", when used alone, means ... It is bounded, and barred
+        # from containing a full stop or a quote so it can neither run
+        # into the next sentence nor swallow a following quoted term.
+        r"[^.\u201c\u201d\"]{0,44}?means\b"
+    )
+
+    # French definitions, which carry no defining verb at all:
+    # « arbre de rue » Arbre à planter entre la limite du lot ...
+    # The guillemet opening the line is the entire marker, so the
+    # pattern also demands a capitalised body: a cross-reference reads
+    # « ... » de l'arrêté and must not be mistaken for a definition.
+    definition_guillemet: re.Pattern[str] = re.compile(
+        r"^\u00ab\s*"
+        r"([^.\u00ab\u00bb]{1,90}?)"
+        r"\s*\u00bb\s+"
+        "(?=[A-Z\u00c0-\u00d6\u00d8-\u00de0-9])"
+    )
     # Running header: "Section 8 Low Density Residential Zones RR-CH", or
     # its French form "PARTIE I Section 3 Définitions". The French edition
     # prefixes the part in Roman numerals, so anchoring on "Section" alone
@@ -195,6 +227,13 @@ class NumberingScheme:
     matrix_row: re.Pattern[str] = re.compile(r"^\d+\.\d+(?:\([0-9a-zA-Z]+\))+$")
     # Legend entry: "P = Permitted".
     legend: re.Pattern[str] = re.compile(r"^([A-Z]{1,3})\s*=\s*(.+)$")
+
+    # Whether a numbered heading carries a title. Fredericton writes
+    # "8.14(4) Fences"; Moncton's numbered provisions are paragraphs of
+    # running text with no heading at all, so capturing their first line
+    # as a title both truncates it into a fragment and makes the citation
+    # read as a heading that the bylaw never wrote.
+    clause_titles: bool = True
 
     def is_definitions_part(self, part_title: str | None) -> bool:
         """Whether this part is the definitions chapter, in either language.
@@ -602,12 +641,30 @@ class ParsedPage:
     matrix_title: str | None = None
     matrix_lines: list[str] = field(default_factory=list)
 
+    # Set for a page that cannot be attributed to the surrounding clause
+    # flow - a full-width table in a bilingual document. Without this the
+    # page is appended to whatever clause was open, which both inflates
+    # that clause and files the table under an unrelated section number.
+    standalone: bool = False
 
-def parse_page(page, scheme: NumberingScheme) -> ParsedPage:
-    """Extract one page into ordered, header-stripped, column-aware lines."""
+
+def parse_page(
+    page,
+    scheme: NumberingScheme,
+    *,
+    words: list[dict] | None = None,
+    page_width: float | None = None,
+) -> ParsedPage:
+    """Extract one page into ordered, header-stripped, column-aware lines.
+
+    `words` lets a caller supply a subset - one half of a bilingual
+    page, say - so the same extraction runs over it unchanged.
+    """
     # Only fontname: adding "size" re-segments words wherever the size
     # changes mid-word, which corrupted the sign-matrix zone codes.
-    lines = _group_lines(page.extract_words(extra_attrs=["fontname"]))
+    if words is None:
+        words = page.extract_words(extra_attrs=["fontname"])
+    lines = _group_lines(words)
 
     part_number: str | None = None
     part_title: str | None = None
@@ -634,6 +691,7 @@ def parse_page(page, scheme: NumberingScheme) -> ParsedPage:
     # that would otherwise be mistaken for a column break and reshuffled.
     matrix_number = matrix_title = None
     matrix_lines: list[str] = []
+    width = page_width or page.width
     matrix = _find_matrix(lines, scheme)
 
     if matrix is not None:
@@ -663,7 +721,7 @@ def parse_page(page, scheme: NumberingScheme) -> ParsedPage:
                 break
         lines = remaining
     else:
-        lines = _linearise_columns(lines, page.width, scheme)
+        lines = _linearise_columns(lines, page_width or page.width, scheme)
 
     return ParsedPage(
         page_number=page.page_number,
@@ -689,6 +747,24 @@ def _common_clause_prefix(labels: list[str]) -> str | None:
 # ---------------------------------------------------------------------
 
 
+TABLE_CAPTION = re.compile(r"^(?:TABLE|TABLEAU)\s+(\d+(?:\.\d+)*)\b(.*)$", re.IGNORECASE)
+
+
+def _table_identity(page: ParsedPage) -> tuple[str | None, str | None]:
+    """Number and title for a standalone table page, from its caption.
+
+    A caption is what makes the page citable. "TABLE 12.1" is how the
+    surrounding clauses refer to it ("listed in Table 12.1"), so citing it
+    that way lets a reader follow the reference.
+    """
+    for line in page.lines[:12]:
+        found = TABLE_CAPTION.match(line.text.strip())
+        if found:
+            title = found.group(2).strip(" -\u2013")
+            return f"Table {found.group(1)}", title or None
+    return None, None
+
+
 def _looks_like_toc(page: ParsedPage) -> bool:
     """Table-of-contents pages repeat every heading and must not be chunked.
 
@@ -701,21 +777,82 @@ def _looks_like_toc(page: ParsedPage) -> bool:
     return refs >= max(3, len(page.lines) // 3)
 
 
-def parse_pdf(
-    path: str | Path,
-    *,
-    scheme: NumberingScheme | None = None,
-    first_page: int = 1,
-    last_page: int | None = None,
+
+#: A contents entry: a numbered heading, or a Division/Part line, short
+#: enough to be a heading rather than a provision.
+CONTENTS_ENTRY = re.compile(
+    r"^(?:\d{1,3}(?:\.\d+)?(?:\s?\(\d+\))?\s+\S"
+    r"|Division\s+\d|Section\s+\d|PART(?:IE)?\s+\d|SCHEDULE\s|ANNEXE\s)",
+    re.IGNORECASE,
+)
+CONTENTS_ENTRY_MAX_CHARS = 70
+CONTENTS_MIN_LINES = 12
+CONTENTS_ENTRY_RATIO = 0.5
+
+
+def _looks_like_contents(page: ParsedPage) -> bool:
+    """A contents listing with no page references, which Moncton's is.
+
+    `_looks_like_toc` keys on trailing page numbers ("2-1"); Moncton's
+    contents pages carry none, so they read as a run of valid clause
+    headings and would duplicate every section in the bylaw as an empty
+    clause. What marks them instead is that almost every line is a short
+    numbered heading - measured at 0.66-0.92 on Moncton's contents pages
+    against at most 0.11 on any body page.
+    """
+    lines = [ln for ln in page.lines if ln.text.strip()]
+    if len(lines) < CONTENTS_MIN_LINES:
+        return False
+
+    entries = sum(
+        1
+        for ln in lines
+        if len(ln.text.strip()) < CONTENTS_ENTRY_MAX_CHARS
+        and CONTENTS_ENTRY.match(ln.text.strip())
+    )
+    return entries / len(lines) >= CONTENTS_ENTRY_RATIO
+
+
+#: One entry of a bilingual term index: "accessory building – bâtiment
+#: accessoire". No sentence punctuation, and lowercase on both sides.
+TERM_INDEX_ENTRY = re.compile(
+    r"^[a-z\u00e0-\u00ff][^\u2013\u2014.]{1,44}[\u2013\u2014][^\u2013\u2014.]{1,44}$"
+)
+TERM_INDEX_RATIO = 0.4
+
+
+def _looks_like_term_index(page: ParsedPage) -> bool:
+    """The English-French index of defined terms, which is not provisions.
+
+    Moncton opens with five pages pairing each defined term with its
+    translation. They sit under the heading "1 Definitions", so parsing
+    them produces a 10,000-character clause cited as section 1 - the same
+    citation as the real section 1, which is on a later page. A reader
+    following that citation would land on a word list.
+
+    Measured at 0.58-0.81 on those five pages against at most 0.07 on any
+    page of provisions.
+    """
+    lines = [ln.text.strip() for ln in page.lines if ln.text.strip()]
+    if len(lines) < CONTENTS_MIN_LINES:
+        return False
+    entries = sum(1 for text in lines if TERM_INDEX_ENTRY.match(text))
+    return entries / len(lines) >= TERM_INDEX_RATIO
+
+def assemble_clauses(
+    pages: list[ParsedPage],
+    scheme: NumberingScheme,
 ) -> list[Clause]:
-    """Parse a bylaw PDF into ordered clauses.
+    """Turn parsed pages into ordered clauses.
+
+    Separated from PDF reading so the same assembly runs over a whole
+    document or over one language's half of a bilingual one.
 
     Text before the first recognised clause heading (title page, adoption
-    notes) is dropped rather than attached to clause 1: unattributable text
-    cannot be cited, and Section 5 requires every statement to carry a
-    section reference.
+    notes) is dropped rather than attached to clause 1: unattributable
+    text cannot be cited, and Section 5 requires every statement to carry
+    a section reference.
     """
-    scheme = scheme or NumberingScheme()
     clauses: list[Clause] = []
 
     current: Clause | None = None
@@ -726,6 +863,10 @@ def parse_pdf(
     part_title: str | None = None
     definition_index = 0
     skipped_toc = 0
+    # Moncton heads a section with its title on the line above the
+    # number - "Sight triangle and setback ..." then "111 (1) Minimum
+    # yard requirements ...". Held here until a clause claims it.
+    pending_title: list[str] = []
 
     def flush() -> None:
         nonlocal current, buffer
@@ -735,132 +876,143 @@ def parse_pdf(
                 clauses.append(current)
         current, buffer = None, []
 
-    with pdfplumber.open(str(path)) as pdf:
-        pages = pdf.pages[first_page - 1 : last_page]
-        for raw_page in pages:
-            page = parse_page(raw_page, scheme)
+    for page in pages:
+        if (
+            _looks_like_toc(page)
+            or _looks_like_contents(page)
+            or _looks_like_term_index(page)
+        ):
+            skipped_toc += 1
+            continue
 
-            if _looks_like_toc(page):
-                skipped_toc += 1
-                continue
+        # Some pages carry no running header at all - the sign permission
+        # matrices start straight in on "COMMERCIAL ZONES". The document
+        # is sequential, so the last header seen still applies.
+        if page.part_number:
+            if page.part_number != part_number:
+                # A new part invalidates the subsection carried over from
+                # the previous one.
+                parent_number = parent_title = None
+            part_number, part_title = page.part_number, page.part_title
 
-            # Some pages carry no running header at all - the sign
-            # permission matrices start straight in on "COMMERCIAL ZONES".
-            # The document is sequential, so the last header seen still
-            # applies; carrying it forward attributes those pages to the
-            # right section instead of leaving them unattributed.
-            if page.part_number:
-                if page.part_number != part_number:
-                    # A new part invalidates the subsection carried over
-                    # from the previous one, which would otherwise attach
-                    # Section 6 content to a Section 5 parent.
-                    parent_number = parent_title = None
-                part_number, part_title = page.part_number, page.part_title
+        if page.matrix_lines:
+            flush()
+            matrix_part = (
+                page.matrix_number.split(".")[0] if page.matrix_number else None
+            )
+            clauses.append(
+                Clause(
+                    section_number=page.matrix_number or (part_number or "?"),
+                    section_title=page.matrix_title or "Permissions by zone",
+                    text=_clean_text("\n".join(page.matrix_lines)),
+                    page_number=page.page_number,
+                    page_label=page.page_label,
+                    part_number=matrix_part or part_number,
+                    part_title=page.part_title or part_title,
+                    # A matrix is a standalone table; its own number is the
+                    # parent. Inheriting the last subsection would file it
+                    # under an unrelated section.
+                    parent_number=None,
+                    parent_title=None,
+                    amendments=list(page.amendments),
+                )
+            )
 
-            if page.matrix_lines:
-                flush()
-                matrix_part = page.matrix_number.split(".")[0] if page.matrix_number else None
+        if page.standalone:
+            # Emitted whole rather than merged into the clause flow. Its
+            # rows are a grid whose meaning depends on the whole page, and
+            # attributing it to the previous clause would cite a setback
+            # table as part of an unrelated provision.
+            flush()
+            text = _clean_text("\n".join(line.text for line in page.lines))
+            if text:
+                number, title = _table_identity(page)
                 clauses.append(
                     Clause(
-                        section_number=page.matrix_number or (part_number or "?"),
-                        section_title=page.matrix_title or "Permissions by zone",
-                        text=_clean_text("\n".join(page.matrix_lines)),
+                        section_number=number
+                        or f"p.{page.page_label or page.page_number}",
+                        section_title=title or "Table",
+                        text=text,
                         page_number=page.page_number,
                         page_label=page.page_label,
-                        part_number=matrix_part or part_number,
-                        part_title=page.part_title or part_title,
-                        # A matrix is a standalone table; its own number is
-                        # the parent. Inheriting the subsection last seen
-                        # would file it under an unrelated section.
+                        part_number=part_number,
+                        part_title=part_title,
                         parent_number=None,
                         parent_title=None,
                         amendments=list(page.amendments),
                     )
                 )
+            continue
 
-            in_definitions = scheme.is_definitions_part(part_title)
+        in_definitions = scheme.is_definitions_part(part_title)
 
-            for line in page.lines:
-                stripped = line.text.strip()
-                if not stripped:
-                    continue
+        # Indexed rather than iterated: a French definition whose term is
+        # too long for one line closes its guillemet on the next, and the
+        # pattern can only see that if the branch may look ahead.
+        index = 0
+        while index < len(page.lines):
+            line = page.lines[index]
+            index += 1
+            stripped = line.text.strip()
+            if not stripped:
+                continue
 
-                # Order matters. A numbered heading wins over anything
-                # else on the line, then the subsection heading, and only
-                # then the two definition forms - otherwise a heading whose
-                # title happens to contain "means" would open a definition
-                # instead of a clause.
-                clause_match = (
-                    scheme.clause.match(stripped) if line.starts_bold else None
+            # Order matters. A numbered heading wins over anything else on
+            # the line, then the subsection heading, and only then the two
+            # definition forms - otherwise a heading whose title happens
+            # to contain "means" would open a definition, not a clause.
+            clause_match = (
+                scheme.clause.match(stripped) if line.starts_bold else None
+            )
+            if clause_match:
+                flush()
+                # "82. 1 (1)" and "111 (1)" are the same citation once
+                # the layout's spacing is taken out: 82.1(1), 111(1).
+                number = re.sub(r"\s+", "", clause_match.group(1))
+                rest = clause_match.group(2).strip()
+                # An untitled scheme keeps its first line as text. Read as
+                # a title it would be a truncated sentence, and the clause
+                # body would begin mid-sentence.
+                title = (
+                    rest if scheme.clause_titles else " ".join(pending_title)
                 )
-                if clause_match:
+                pending_title = []
+                current = Clause(
+                    section_number=number,
+                    section_title=title or None,
+                    text="",
+                    page_number=page.page_number,
+                    page_label=page.page_label,
+                    part_number=part_number,
+                    part_title=part_title,
+                    parent_number=parent_number,
+                    parent_title=parent_title,
+                    amendments=list(page.amendments),
+                )
+                if not scheme.clause_titles and rest:
+                    buffer.append(rest)
+                continue
+
+            subsection_match = (
+                scheme.subsection.match(stripped) if line.starts_bold else None
+            )
+            if subsection_match:
+                flush()
+                parent_number = subsection_match.group(1)
+                parent_title = subsection_match.group(2).strip()
+                continue
+
+            # Fredericton numbers its entries "(203) Utilities means ...".
+            # Without this branch the definitions chapter accumulates onto
+            # the last clause of the previous section.
+            if in_definitions:
+                definition = scheme.definition.match(stripped)
+                if definition:
                     flush()
-                    number, title = clause_match.group(1), clause_match.group(2).strip()
+                    number, body = definition.group(1), definition.group(2).strip()
                     current = Clause(
-                        section_number=number,
-                        section_title=title,
-                        text="",
-                        page_number=page.page_number,
-                        page_label=page.page_label,
-                        part_number=part_number,
-                        part_title=part_title,
-                        parent_number=parent_number,
-                        parent_title=parent_title,
-                        amendments=list(page.amendments),
-                    )
-                    continue
-
-                subsection_match = (
-                    scheme.subsection.match(stripped) if line.starts_bold else None
-                )
-                if subsection_match:
-                    flush()
-                    parent_number = subsection_match.group(1)
-                    parent_title = subsection_match.group(2).strip()
-                    continue
-
-                # Fredericton numbers its entries "(203) Utilities means
-                # ...". Without this branch the whole definitions chapter
-                # accumulates onto the last clause of the previous section
-                # - one 58,000-character blob that exceeds the embedding
-                # input limit and cites the wrong section for every term.
-                if in_definitions:
-                    definition = scheme.definition.match(stripped)
-                    if definition:
-                        flush()
-                        number, body = definition.group(1), definition.group(2).strip()
-                        current = Clause(
-                            section_number=f"{part_number}({number})",
-                            section_title=_definition_term(body),
-                            text="",
-                            page_number=page.page_number,
-                            page_label=page.page_label,
-                            part_number=part_number,
-                            part_title=part_title,
-                            parent_number=part_number,
-                            parent_title=part_title,
-                            amendments=list(page.amendments),
-                        )
-                        buffer.append(body)
-                        continue
-
-                # Unnumbered `<term> means ...`, checked regardless of
-                # whether the running header names a definitions chapter:
-                # only Fredericton labels its header that way, and the
-                # other bylaws would never reach this branch otherwise.
-                # The bold requirement is what keeps it honest - running
-                # prose containing "means" is not bold-started.
-                by_means = (
-                    scheme.definition_by_means.match(stripped)
-                    if line.starts_bold
-                    else None
-                )
-                if by_means is not None:
-                    flush()
-                    definition_index += 1
-                    current = Clause(
-                        section_number=f"{part_number or '0'}({definition_index})",
-                        section_title=by_means.group(1).strip(),
+                        section_number=f"{part_number}({number})",
+                        section_title=_definition_term(body),
                         text="",
                         page_number=page.page_number,
                         page_label=page.page_label,
@@ -870,20 +1022,119 @@ def parse_pdf(
                         parent_title=part_title,
                         amendments=list(page.amendments),
                     )
-                    buffer.append(stripped)
+                    buffer.append(body)
                     continue
 
-                if current is not None:
-                    buffer.append(stripped)
+            # Unnumbered `<term> means ...`, checked regardless of whether
+            # the running header names a definitions chapter: only
+            # Fredericton labels its header that way.
+            #
+            # Two forms. A quoted term needs no bold - the quotes are the
+            # marker. An unquoted one does, because prose containing
+            # "means" is common and is never bold-started.
+            by_means = scheme.definition_quoted.match(stripped)
+            if by_means is None and line.starts_bold:
+                by_means = scheme.definition_by_means.match(stripped)
+            if by_means is not None:
+                flush()
+                definition_index += 1
+                fallback_part = part_number or "0"
+                current = Clause(
+                    section_number=f"{fallback_part}({definition_index})",
+                    section_title=by_means.group(1).strip(),
+                    text="",
+                    page_number=page.page_number,
+                    page_label=page.page_label,
+                    part_number=part_number,
+                    part_title=part_title,
+                    parent_number=part_number,
+                    parent_title=part_title,
+                    amendments=list(page.amendments),
+                )
+                buffer.append(stripped)
+                continue
 
-        flush()
+            # French definitions: « terme » Corps du texte. No verb to
+            # anchor on, so a wrapped term is joined with the line that
+            # carries its closing guillemet before matching - otherwise
+            # the three longest French terms open no clause and their
+            # definitions land in the previous one.
+            guillemet = scheme.definition_guillemet.match(stripped)
+            if (
+                guillemet is None
+                and stripped.startswith("\u00ab")
+                and "\u00bb" not in stripped
+                and index < len(page.lines)
+            ):
+                joined = f"{stripped} {page.lines[index].text.strip()}"
+                guillemet = scheme.definition_guillemet.match(joined)
+                if guillemet is not None:
+                    stripped = joined
+                    index += 1
+
+            if guillemet is not None:
+                flush()
+                definition_index += 1
+                current = Clause(
+                    section_number=f"{part_number or '0'}({definition_index})",
+                    section_title=guillemet.group(1).strip(),
+                    text="",
+                    page_number=page.page_number,
+                    page_label=page.page_label,
+                    part_number=part_number,
+                    part_title=part_title,
+                    parent_number=part_number,
+                    parent_title=part_title,
+                    amendments=list(page.amendments),
+                )
+                buffer.append(stripped)
+                continue
+
+            if not scheme.clause_titles and line.starts_bold:
+                headings = pending_title + [stripped]
+                # Two lines and 140 characters is the longest heading in
+                # the bylaw. Beyond that it is a bold table header, not a
+                # title, and it belongs in the text.
+                if len(headings) <= 2 and len(" ".join(headings)) <= 140:
+                    pending_title = headings
+                    continue
+
+            if pending_title:
+                # Bold, but no clause claimed it - a table header rather
+                # than a heading. Kept as text rather than discarded.
+                if current is not None:
+                    buffer.extend(pending_title)
+                pending_title = []
+
+            if current is not None:
+                buffer.append(stripped)
+
+    flush()
 
     log.info(
-        "pdf_parsed",
-        path=str(path),
-        clauses=len(clauses),
-        toc_pages_skipped=skipped_toc,
+        "clauses_assembled", clauses=len(clauses), toc_pages_skipped=skipped_toc
     )
+    return clauses
+
+
+def parse_pdf(
+    path: str | Path,
+    *,
+    scheme: NumberingScheme | None = None,
+    first_page: int = 1,
+    last_page: int | None = None,
+) -> list[Clause]:
+    """Parse a bylaw PDF into ordered clauses."""
+    scheme = scheme or NumberingScheme()
+
+    with pdfplumber.open(str(path)) as pdf:
+        pages = [
+            parse_page(raw, scheme)
+            for raw in pdf.pages[first_page - 1 : last_page]
+        ]
+
+    clauses = assemble_clauses(pages, scheme)
+    log.info("pdf_parsed", path=str(path), clauses=len(clauses))
     return clauses
 
 
@@ -954,8 +1205,34 @@ CLAUSE_DOTTED2 = re.compile(r"^(\d+\.\d+)\s+(.*)$")
 SUBSECTION_DOTTED = re.compile(r"^(\d+\.\d+)\s+([A-Z][A-Za-z0-9 &/,'’()\-\.]{3,})$")
 SUBSECTION_NUMBER = re.compile(r"^(\d+)\s+([A-Z][A-Z0-9 &/,'’()\-\.]{3,})$")
 
+#: "100 (4)", "100.1", "108(1)" - Moncton Z-222. Sections are numbered
+#: straight through the document rather than per chapter, so there is no
+#: leading chapter number to anchor on.
+#
+# Every part is optional after the first, because a section whose whole
+# content is one paragraph carries no subsection number at all ("142 In
+# accordance with section 7 ..."). The spacing is optional too:
+# pdfplumber emits "82.1" as "82" then ". 1" where the glyph spacing
+# changes, and the number is normalised on the way into the clause.
+#
+# Only ever applied to a bold line, so a table row opening with a figure
+# cannot match it.
+CLAUSE_MONCTON = re.compile(
+    r"^(\d{1,3}(?:\s?\.\s?\d+)?(?:\s?\(\d+\))?)\s+(.*)$"
+)
+
+#: "Division 8.2 Other residential uses" / "Section 8.2 Autres usages".
+SUBSECTION_DIVISION = re.compile(
+    r"^(?:Division|Section)\s+(\d+\.\d+)\s+(.+)$", re.IGNORECASE
+)
+
 SCHEMES: dict[str, NumberingScheme] = {
     "paren": NumberingScheme(),
+    "moncton": NumberingScheme(
+        clause=CLAUSE_MONCTON,
+        subsection=SUBSECTION_DIVISION,
+        clause_titles=False,
+    ),
     "dotted3": NumberingScheme(
         clause=CLAUSE_DOTTED3,
         subsection=SUBSECTION_DOTTED,
@@ -972,3 +1249,259 @@ DEFAULT_SCHEME = "paren"
 def scheme_for(name: str | None) -> NumberingScheme:
     """Look up a named scheme, falling back to Fredericton's."""
     return SCHEMES.get(name or DEFAULT_SCHEME, SCHEMES[DEFAULT_SCHEME])
+
+
+# ---------------------------------------------------------------------
+#  Bilingual documents (Moncton)
+#
+#  Fredericton publishes separate English and French PDFs, so language is
+#  a property of the file. Moncton publishes ONE document with English in
+#  a left column and French in a right column, on the same lines. Parsing
+#  it as a single stream interleaves the two languages inside every
+#  clause: an English question retrieves a chunk that is half French, and
+#  a French citation quotes English text.
+#
+#  Pages are therefore split at the gutter and each side parsed as its own
+#  document. The detector is a word that CROSSES the gutter: two prose
+#  columns never do, while a full-width table row usually does. That
+#  distinction matters because Moncton's lot-requirement tables span the
+#  page - splitting one would sever a zone column from its setback values,
+#  the same corruption the Fredericton sign matrix suffered.
+# ---------------------------------------------------------------------
+
+#: Where to look for the gutter, as a fraction of page width.
+GUTTER_BAND = (0.40, 0.65)
+
+#: Minimum gap that marks the bilingual gutter. Deliberately smaller than
+#: GUTTER_MIN_WIDTH: Moncton sets its two languages only ~18pt apart, and
+#: at the 30pt used for use-list columns the detector skipped the real
+#: gutter at x=320 and locked onto a sparser gap at x=343 - which put
+#: English text into the French corpus.
+BILINGUAL_GUTTER_MIN_GAP = 14.0
+
+#: Above this fraction of words crossing the gutter, the page is not two
+#: columns of prose and must not be split.
+MAX_CROSSING_RATIO = 0.02
+
+#: Each side needs at least this many words to count as a real column.
+MIN_COLUMN_WORDS = 20
+
+
+def detect_bilingual_gutter(pdf, sample: int = 40) -> float | None:
+    """The x where the second language column starts, or None.
+
+    Found from the most common start of a wide gap in the middle band of
+    the page, sampled across the document rather than taken from one page
+    that might be a table.
+    """
+    starts: collections.Counter[int] = collections.Counter()
+    pages = pdf.pages
+    step = max(1, len(pages) // sample)
+
+    for page in pages[: len(pages) : step]:
+        low, high = page.width * GUTTER_BAND[0], page.width * GUTTER_BAND[1]
+        for line in _group_lines(page.extract_words(extra_attrs=["fontname"])):
+            for left, right in zip(line.words, line.words[1:]):
+                gap = right["x0"] - left["x1"]
+                if gap >= BILINGUAL_GUTTER_MIN_GAP and low <= right["x0"] <= high:
+                    starts[round(right["x0"])] += 1
+
+    if not starts:
+        return None
+    return float(starts.most_common(1)[0][0]) - COLUMN_X_TOLERANCE
+
+
+def split_at_gutter(
+    words: list[dict], gutter: float
+) -> tuple[list[dict], list[dict]] | None:
+    """Split one page's words into left and right columns.
+
+    Returns None when the page is not two columns of prose - a cover page,
+    a contents listing, or a full-width table - so the caller can handle
+    it rather than cutting a table in half.
+    """
+    if len(words) < MIN_COLUMN_WORDS * 2:
+        return None
+
+    crossing = sum(1 for w in words if w["x0"] < gutter < w["x1"])
+    if crossing / len(words) > MAX_CROSSING_RATIO:
+        return None
+
+    left = [w for w in words if w["x1"] <= gutter]
+    right = [w for w in words if w["x0"] >= gutter]
+    if len(left) < MIN_COLUMN_WORDS or len(right) < MIN_COLUMN_WORDS:
+        return None
+
+    return left, right
+
+
+
+#: A prose line needs this many words on each side of the gutter. A
+#: two-cell table row ("Minimum lot area | 558 m2") has fewer, and must
+#: not be torn into two languages.
+MIN_LINE_WORDS_PER_SIDE = 3
+
+
+#: A section number standing in its own indented column.
+INDENT_NUMBER = re.compile(r"^\d{1,3}(?:\.\d+)?(?:\s?\(\d+\))?$")
+
+
+def _wide_gaps(words: list[dict]) -> list[tuple[float, float]]:
+    """Horizontal gaps in one line wide enough to be a column boundary.
+
+    A gap that follows a bare section number is not one. Moncton sets the
+    number in its own indented column, so the first line of every section
+    carries such a gap in each language - "158 <gap> Les aménagements" -
+    and counting it as a column boundary makes the line look like a table
+    row and leaves the two languages interleaved.
+    """
+    ordered = sorted(words, key=lambda w: w["x0"])
+    return [
+        (left["x1"], right["x0"])
+        for left, right in zip(ordered, ordered[1:])
+        if right["x0"] - left["x1"] >= BILINGUAL_GUTTER_MIN_GAP
+        and not INDENT_NUMBER.match(left["text"])
+    ]
+
+
+def _line_is_bilingual_prose(words: list[dict], gutter: float) -> bool:
+    """Whether one line is English prose beside its French translation.
+
+    Three conditions, and a table row fails at least one. It must have a
+    wide gap spanning the gutter; it must have no wide gap to the RIGHT
+    of the gutter, since a table row's cells go on producing gaps across
+    the rest of the page; and both sides must hold enough words to be
+    prose rather than a label and its value.
+
+    Getting this wrong in the permissive direction severs a lot
+    requirement from its zone - the Fredericton sign-matrix corruption
+    again - so every uncertain line is left whole.
+    """
+    gaps = _wide_gaps(words)
+    spanning = [g for g in gaps if g[0] <= gutter <= g[1]]
+    if len(spanning) != 1:
+        return False
+    if any(start > gutter for start, _ in gaps):
+        return False
+
+    left = sum(1 for w in words if w["x1"] <= gutter)
+    right = sum(1 for w in words if w["x0"] >= gutter)
+    return left >= MIN_LINE_WORDS_PER_SIDE and right >= MIN_LINE_WORDS_PER_SIDE
+
+
+def split_lines_at_gutter(
+    words: list[dict], gutter: float
+) -> tuple[list[dict], list[dict], int]:
+    """Assign a mixed page's words to the two languages, line by line.
+
+    Some pages carry a paragraph of two-column prose above a full-width
+    table. The page as a whole cannot be split - the table crosses the
+    gutter - but leaving it whole interleaves the languages inside the
+    prose: "158 No development shall be permitted and no main 158 Les
+    aménagements ne sont permis et les".
+
+    So prose lines are split and table lines are given to both corpora,
+    which is what a bilingual table already is: its cells read "10.5 m /
+    10,5 m" in either language.
+    """
+    left: list[dict] = []
+    right: list[dict] = []
+    split = 0
+
+    for line in _group_lines(words):
+        if _line_is_bilingual_prose(line.words, gutter):
+            left.extend(w for w in line.words if w["x1"] <= gutter)
+            right.extend(w for w in line.words if w["x0"] >= gutter)
+            split += 1
+        else:
+            left.extend(line.words)
+            right.extend(line.words)
+
+    return left, right, split
+
+def parse_bilingual_pdf(
+    path: str | Path,
+    *,
+    scheme: NumberingScheme | None = None,
+    languages: tuple[str, str] = ("en", "fr"),
+) -> dict[str, list[Clause]]:
+    """Parse an interleaved bilingual bylaw into one corpus per language.
+
+    Pages that cannot be split - tables whose cells carry both languages
+    inline ("10.5 m / 10,5 m") - are given to BOTH corpora rather than
+    dropped. They hold the lot requirements that setback and frontage
+    questions depend on, and their content genuinely is the source text in
+    either language.
+    """
+    scheme = scheme or NumberingScheme()
+    left_lang, right_lang = languages
+
+    per_language: dict[str, list[ParsedPage]] = {left_lang: [], right_lang: []}
+    split_pages = shared_pages = mixed_pages = 0
+
+    with pdfplumber.open(str(path)) as pdf:
+        gutter = detect_bilingual_gutter(pdf)
+        if gutter is None:
+            raise ValueError(
+                f"{path} has no detectable bilingual gutter; it is probably "
+                "not an interleaved two-column document."
+            )
+
+        for raw in pdf.pages:
+            words = raw.extract_words(extra_attrs=["fontname"])
+            halves = split_at_gutter(words, gutter)
+
+            if halves is None:
+                left_words, right_words, split = split_lines_at_gutter(
+                    words, gutter
+                )
+
+                if split == 0:
+                    # Nothing here is two-column prose: a whole-page table,
+                    # given to both corpora and cited on its own rather than
+                    # merged into whichever clause happened to precede it.
+                    shared = parse_page(raw, scheme)
+                    shared.standalone = True
+                    per_language[left_lang].append(shared)
+                    per_language[right_lang].append(shared)
+                    shared_pages += 1
+                    continue
+
+                # A prose paragraph sitting above a full-width table. Full
+                # page width, because the table rows still need their
+                # columns mapped across the whole page.
+                per_language[left_lang].append(
+                    parse_page(raw, scheme, words=left_words)
+                )
+                per_language[right_lang].append(
+                    parse_page(raw, scheme, words=right_words)
+                )
+                mixed_pages += 1
+                continue
+
+            left_words, right_words = halves
+            per_language[left_lang].append(
+                parse_page(raw, scheme, words=left_words, page_width=gutter)
+            )
+            per_language[right_lang].append(
+                parse_page(
+                    raw, scheme, words=right_words, page_width=raw.width - gutter
+                )
+            )
+            split_pages += 1
+
+    corpora = {
+        language: assemble_clauses(pages, scheme)
+        for language, pages in per_language.items()
+    }
+
+    log.info(
+        "bilingual_pdf_parsed",
+        path=str(path),
+        gutter=round(gutter, 1),
+        split_pages=split_pages,
+        shared_pages=shared_pages,
+        mixed_pages=mixed_pages,
+        clauses={lang: len(cs) for lang, cs in corpora.items()},
+    )
+    return corpora

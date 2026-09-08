@@ -9,10 +9,13 @@ document rather than an imagined layout.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from app.services.document_parser import (
     NumberingScheme,
+    SCHEMES,
     ParsedPage,
     PageLine,
     _clean_text,
@@ -20,6 +23,9 @@ from app.services.document_parser import (
     _find_matrix,
     _group_lines,
     _linearise_columns,
+    _line_is_bilingual_prose,
+    _looks_like_contents,
+    _looks_like_term_index,
     _looks_like_toc,
     _render_matrix,
     _strip_amendments,
@@ -446,3 +452,198 @@ def test_source_hash_is_stable_and_content_sensitive(tmp_path):
 
     b.write_bytes(b"bylaw content amended")
     assert source_hash(a) != source_hash(b)
+
+
+# ---------------------------------------------------------------------
+#  Bilingual documents (Moncton)
+# ---------------------------------------------------------------------
+
+MONCTON = SCHEMES["moncton"]
+
+
+@pytest.mark.parametrize(
+    "line, term",
+    [
+        (
+            "“ bicycle parking space ” means a slot in a rack",
+            "bicycle parking space",
+        ),
+        ("“cemetery” means land used for internment", "cemetery"),
+        # A qualifier may sit between the term and the verb.
+        ("“ city ”, when used alone, means the geographic area", "city"),
+    ],
+)
+def test_quoted_definition_needs_no_bold(line, term):
+    """Moncton does not set its defined terms in bold; the quotes mark them."""
+    found = MONCTON.definition_quoted.match(line)
+    assert found is not None
+    assert found.group(1).strip() == term
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A continuation line, not a definition: read as one, it opens a
+        # clause that swallows the rest of the chapter.
+        "which an adult sized bicycle may be secured by means of",
+        "copy used for the advertisement of goods or services.",
+        # A quoted sentence is not a defined term.
+        "“No parking.” The sign means the driver may not stop",
+    ],
+)
+def test_prose_is_not_read_as_a_quoted_definition(line):
+    assert MONCTON.definition_quoted.match(line) is None
+
+
+def test_french_definition_has_no_defining_verb():
+    """The guillemets are the whole marker: no "means" to anchor on."""
+    found = MONCTON.definition_guillemet.match(
+        "« arbre de rue » Arbre à planter entre la limite du lot"
+    )
+    assert found is not None
+    assert found.group(1).strip() == "arbre de rue"
+
+
+def test_french_cross_reference_is_not_a_definition():
+    """A lowercase continuation marks a reference, not a defined term."""
+    assert (
+        MONCTON.definition_guillemet.match(
+            "« arbre de rue » de l’arrêté ne s’applique pas"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "line, number",
+    [
+        ("111 (1) Minimum yard requirements do not apply", "111(1)"),
+        # A section whose whole content is one paragraph carries no
+        # subsection number.
+        ("142 In accordance with section 7, Table 12.2 identifies", "142"),
+        # pdfplumber splits "82.1" where the glyph spacing changes.
+        ("82. 1 (1) Despite Table 14.1, no lot containing", "82.1(1)"),
+    ],
+)
+def test_moncton_section_numbers_survive_the_layout(line, number):
+    found = MONCTON.clause.match(line)
+    assert found is not None
+    assert re.sub(r"\s+", "", found.group(1)) == number
+
+
+def test_two_columns_of_prose_are_split_by_language():
+    words = line_of("No development shall be", 60, 100)
+    words += line_of("Les aménagements ne sont", 330, 100)
+    assert _line_is_bilingual_prose(words, 316.0) is True
+
+
+def test_table_row_is_never_split_by_language():
+    """Severing a row would strand a setback from the zone it governs."""
+    words = [
+        word("R-1A", 60, 100),
+        word("558", 200, 100),
+        word("460", 340, 100),
+        word("460", 460, 100),
+    ]
+    assert _line_is_bilingual_prose(words, 316.0) is False
+
+
+def test_indented_section_number_is_not_a_column_boundary():
+    """Both languages indent the number, leaving a wide gap after it.
+
+    Counting that gap as a column boundary makes the line look like a
+    table row, and the two languages stay interleaved in the text.
+    """
+    words = line_of("158", 60, 100) + line_of("No development permitted", 100, 100)
+    words += line_of("158", 330, 100) + line_of("Les aménagements permis", 370, 100)
+    assert _line_is_bilingual_prose(words, 316.0) is True
+
+
+def test_contents_page_without_page_numbers_is_recognised():
+    """Moncton's contents carry no page references for _looks_like_toc."""
+    page = make_page(
+        [
+            "PART 16 - DOWNTOWN ZONES",
+            "153 Table 16.1 Downtown zones use table",
+            "154 Table 16.2 Downtown zones secondary use table",
+            "155 Table 16.3 Downtown zones lot requirements table",
+            "PART 17 - RURAL AND MANUFACTURED DWELLING ZONES",
+            "156 Table 17.1 Rural and manufactured dwelling zones use table",
+            "PART 18 - TOURISM ZONE",
+            "159 Table 18.1 Tourism zone use table",
+            "160 Table 18.2 Tourism zone secondary use table",
+            "161 Table 18.3 Tourism zone lot requirements table",
+            "162 Integrated Development",
+            "163 Conditional agreements carried over",
+            "164 Previous approvals",
+        ]
+    )
+    assert _looks_like_contents(page) is True
+
+
+def test_page_of_provisions_is_not_mistaken_for_contents():
+    page = make_page(
+        [
+            "111 (1) Minimum yard requirements do not apply on the side",
+            "of the lot where a commercial or industrial use abuts a",
+            "railway right-of-way, but section 110 applies, with the",
+            "necessary modifications, to preserve the sight triangle at",
+            "the intersection of the railway and the street.",
+            "111 (2) Where a new residential development abuts a railway",
+            "right-of-way, a minimum 30 metre setback shall be",
+            "maintained between the railway right-of-way and a main",
+            "building.",
+            "Reduced frontage on a curve",
+            "112 (1) Where a lot fronts on the outside of a curve, the",
+            "minimum frontage may be reduced by up to 20 percent.",
+            "112 (2) Subsection (1) does not apply in the MD Zone.",
+        ]
+    )
+    assert _looks_like_contents(page) is False
+
+
+def test_term_index_is_not_read_as_the_definitions_section():
+    """The index pairs terms with translations; it states no rule.
+
+    Parsed, it becomes a 10,000-character clause cited as section 1 -
+    the citation the real section 1 already carries.
+    """
+    page = make_page(
+        [
+            "accessory building – bâtiment accessoire",
+            "accessory use – usage accessoire",
+            "additional dwelling unit – logement supplémentaire",
+            "adult cabaret – cabaret pour adultes",
+            "borrow pit – banc d’emprunt",
+            "building – bâtiment",
+            "cemetery – cimetière",
+            "city – ville",
+            "dwelling unit – logement",
+            "garden suite – pavillon-jardin",
+            "lot – lot",
+            "sign – enseigne",
+            "zone – zone",
+        ]
+    )
+    assert _looks_like_term_index(page) is True
+
+
+def test_definitions_section_is_not_mistaken_for_the_index():
+    page = make_page(
+        [
+            "“ garden suite ” means a self-contained dwelling unit that",
+            "is accessory to a single unit dwelling on the same lot.",
+            "“ grade ” means the average level of finished ground",
+            "adjoining a building at all exterior walls.",
+            "“ height ” means the vertical distance between grade and",
+            "the highest point of the roof surface.",
+            "“ lot ” means a parcel of land described in a deed or shown",
+            "on a registered subdivision plan.",
+            "“ sign ” means any device, structure or medium used to",
+            "convey information visually.",
+            "“ street ” means a public highway vested in the City.",
+            "“ yard ” means an open space on the same lot as a building.",
+            "“ zone ” means an area of the City shown on Schedule A.",
+        ]
+    )
+    assert _looks_like_term_index(page) is False
