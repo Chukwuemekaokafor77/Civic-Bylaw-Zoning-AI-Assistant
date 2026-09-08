@@ -1,0 +1,33 @@
+{
+  "municipality_id": "nl_mountpearl",
+  "language": "en",
+  "bylaw_name": "Mount Pearl Development Regulations 2010",
+  "notes": [
+    "The twenty-five pages of amendment register at the back of this document are skipped. Every insertion they record already appears in the consolidated body - 'INDOOR PARKING FACILITIES' is defined on page 10 and recorded again on page 179 - so parsing them duplicated provisions and, because register entries carry no section number, filed them under whichever section came last. Two clauses of 14,030 and 13,304 characters were built that way.",
+    "The definition question therefore asserts the term is found under section 2, where the body defines it, and not under the 11.28.2 the register was inheriting.",
+    "Definitions are unnumbered, so they cite the section that introduces them rather than a position in the list."
+  ],
+  "questions": [
+    {
+      "id": "indoor-parking-definition",
+      "question": "What is an indoor parking facility?",
+      "expect_sections": ["2"],
+      "expect_text": ["portion of a building"],
+      "why": "This term is defined once in the body and recorded again in the amendment register. Retrieving the register copy means citing a historical record as if it were the provision."
+    },
+    {
+      "id": "residential-permitted-uses",
+      "question": "What uses are permitted in a residential zone?",
+      "expect_sections": ["11.1.1"],
+      "expect_text": ["Accessory Building"],
+      "why": "A zone's permitted-use list, which is what a resident is usually asking for."
+    },
+    {
+      "id": "utility-fencing",
+      "question": "Does a utility use have to be fenced?",
+      "expect_sections": ["11.24.5"],
+      "expect_text": ["fenced"],
+      "why": "A three-part section number, which is this bylaw's own convention."
+    }
+  ]
+}
