@@ -12,13 +12,15 @@
 
 SET search_path = public, extensions;
 
--- Build a 1536-dim vector without needing a real embedding call.
+-- Build a vector of the column's width without a real embedding call.
+-- 1024 since migration 003 moved embeddings to a local model; this must
+-- track bylaw_chunks.embedding or every insert here fails on dimension.
 CREATE OR REPLACE FUNCTION pg_temp.mkvec(fill_val real, first_val real DEFAULT NULL)
 RETURNS extensions.vector LANGUAGE sql IMMUTABLE AS $fn$
   SELECT replace(replace(
            (CASE WHEN first_val IS NULL
-                 THEN array_fill(fill_val, ARRAY[1536])
-                 ELSE array_prepend(first_val, array_fill(fill_val, ARRAY[1535]))
+                 THEN array_fill(fill_val, ARRAY[1024])
+                 ELSE array_prepend(first_val, array_fill(fill_val, ARRAY[1023]))
             END)::text, '{', '['), '}', ']')::extensions.vector;
 $fn$;
 

@@ -40,18 +40,26 @@ class Settings(BaseSettings):
     supabase_anon_key: SecretStr | None = None
 
     # ---- Model providers ---------------------------------------------
-    # Embeddings run on Gemini rather than the OpenAI model named in
-    # Section 1, at user direction: the free tier needs no prepayment.
-    # 1536 is a supported Matryoshka output size, so VECTOR(1536) and the
-    # cosine index are unaffected by the switch.
-    gemini_api_key: SecretStr | None = None
-    embedding_model: str = "gemini-embedding-001"
-    embedding_dimensions: int = 1536
+    # Embeddings run on Voyage rather than the OpenAI model named in
+    # Section 1, at user direction. Its 200M-token free grant has no daily
+    # cap (Gemini's free tier allowed 1,000/day, and one bilingual
+    # municipality is ~1,340 chunks), and at 0.28s per query it is half
+    # the latency of the local model that was tried in between.
+    voyage_api_key: SecretStr | None = None
+    embedding_model: str = "voyage-4-large"
+    embedding_dimensions: int = 1024
 
-    # Gemini's free tier counts each embedded TEXT against a per-minute
-    # quota (observed 100/min), not each HTTP request, so the ingestion
-    # pipeline paces itself. Raise this on a paid tier.
-    embedding_items_per_minute: int = 100
+    # Voyage throttles accounts with no payment method on file to 3 RPM
+    # and 10K TPM. The 200M-token grant is still free at that tier - only
+    # the rate is limited - so ingestion paces itself rather than failing.
+    # Adding a payment method raises these substantially and still spends
+    # the free grant first; raise both here if that is done.
+    embedding_requests_per_minute: int = 3
+    embedding_tokens_per_minute: int = 10_000
+
+    # Retained so either previous provider can be reinstated without a
+    # code change; unused while embeddings run on Voyage.
+    gemini_api_key: SecretStr | None = None
 
     # Retained so an OpenAI key can be reinstated without a code change.
     openai_api_key: SecretStr | None = None
@@ -96,13 +104,13 @@ class Settings(BaseSettings):
     @field_validator("embedding_dimensions")
     @classmethod
     def _validate_dimensions(cls, v: int) -> int:
-        # bylaw_chunks.embedding is declared VECTOR(1536). A mismatch here
-        # fails at insert time with an opaque pgvector error, so catch it
-        # at startup instead.
-        if v != 1536:
+        # bylaw_chunks.embedding is declared VECTOR(1024) as of migration
+        # 003. A mismatch fails at insert time with an opaque pgvector
+        # error, so catch it at startup instead.
+        if v != 1024:
             raise ValueError(
-                "embedding_dimensions must be 1536 to match VECTOR(1536) "
-                "in bylaw_chunks.embedding"
+                "embedding_dimensions must be 1024 to match VECTOR(1024) "
+                "in bylaw_chunks.embedding (see db/003_local_embeddings.sql)"
             )
         return v
 

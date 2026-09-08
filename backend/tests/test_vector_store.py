@@ -16,7 +16,7 @@ from app.config import Settings
 from app.services.chunker import ChunkPayload
 from app.services.vector_store import NATURAL_KEY, TABLE, BylawChunkStore
 
-DIMENSIONS = 1536
+DIMENSIONS = 1024
 
 
 def settings() -> Settings:

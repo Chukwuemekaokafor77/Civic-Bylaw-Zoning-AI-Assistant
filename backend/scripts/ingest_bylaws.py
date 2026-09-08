@@ -219,6 +219,14 @@ async def ingest_source(
         outcome.status = "not_a_document"
         outcome.detail = str(exc)[:200]
         return outcome
+    except Exception as exc:  # noqa: BLE001 - isolated deliberately
+        # One municipality's problem must not end the run. Moncton's site
+        # serves an incomplete TLS chain, and before this branch existed
+        # that single failure aborted ingestion for the six municipalities
+        # queued behind it.
+        outcome.status = "error"
+        outcome.detail = f"{type(exc).__name__}: {exc}"[:200]
+        return outcome
 
     decision = await tracker.decide(
         municipality_id, language, bylaw_name, fetched.content_hash, force=force
@@ -267,10 +275,9 @@ async def ingest_source(
     outcome.resumed = len(payloads) - len(pending)
 
     # Embed and commit in slices rather than embedding the whole document
-    # and writing once. A capped daily quota makes an all-or-nothing run
-    # self-defeating: the first attempt died at batch 7 of 15, discarding
-    # ~300 chunks of quota that had already been spent. Committing each
-    # slice means every unit of quota buys permanent progress.
+    # and writing once. Kept after the move to a local model: a slice that
+    # completes is a slice that survives an interrupted run, and it keeps
+    # peak memory bounded on a 2 GB model.
     quota_hit: str | None = None
     for start in range(0, len(pending), DEFAULT_BATCH_SIZE):
         slice_ = pending[start : start + DEFAULT_BATCH_SIZE]
@@ -365,15 +372,26 @@ async def run(args: argparse.Namespace) -> int:
                 continue
 
             print(f"\n>>> {entry['id']} [{source['language']}] {source['bylaw_name']}")
-            outcome = await ingest_source(
-                entry,
-                source,
-                embedder=embedder,
-                store=store,
-                tracker=tracker,
-                force=args.force,
-                dry_run=args.dry_run,
-            )
+            try:
+                outcome = await ingest_source(
+                    entry,
+                    source,
+                    embedder=embedder,
+                    store=store,
+                    tracker=tracker,
+                    force=args.force,
+                    dry_run=args.dry_run,
+                )
+            except Exception as exc:  # noqa: BLE001 - isolated deliberately
+                # Second layer: a failure in parsing, chunking or upsert
+                # is also contained to its own source.
+                outcome = SourceOutcome(
+                    entry["id"],
+                    source["language"],
+                    source["bylaw_name"],
+                    "error",
+                    detail=f"{type(exc).__name__}: {exc}"[:200],
+                )
             if outcome.resumed:
                 outcome.detail = (
                     (outcome.detail + "; ") if outcome.detail else ""
