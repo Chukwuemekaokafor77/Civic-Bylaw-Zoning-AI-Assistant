@@ -89,6 +89,15 @@ BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 30.0
 REQUEST_TIMEOUT_SECONDS = 120.0
 
+# A 429 from a per-minute quota is not a transient error. It clears when
+# the window rolls over, so the wait that resolves it is the window, and
+# jittered exponential backoff capped below a minute simply burns the
+# attempt budget on sleeps too short to help: a run gave up 67 chunks
+# from the end after five such retries. These are counted separately
+# from transport failures, which is what MAX_ATTEMPTS is for.
+RATE_LIMIT_ATTEMPTS = 12
+RATE_LIMIT_WAIT_SECONDS = 61.0
+
 RATE_LIMIT_STATUS = 429
 
 
@@ -360,8 +369,11 @@ class Embedder:
         }
 
         last_error: str | None = None
+        attempt = 0
+        throttled = 0
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        while attempt < MAX_ATTEMPTS:
+            attempt += 1
             # Pace before spending the allowance, not after failing on it.
             pause = self._limiter.wait_time(tokens, time.monotonic())
             if pause > 0:
@@ -396,19 +408,49 @@ class Embedder:
                     f"(HTTP {response.status_code}): {body}"
                 )
 
-            retryable = (
-                response.status_code == RATE_LIMIT_STATUS
-                or response.status_code >= 500
-            )
             last_error = f"HTTP {response.status_code}: {body}"
-            if not retryable or attempt == MAX_ATTEMPTS:
+
+            if response.status_code == RATE_LIMIT_STATUS:
+                if throttled >= RATE_LIMIT_ATTEMPTS:
+                    break
+                throttled += 1
+                # Does not consume an attempt: nothing is wrong with the
+                # request, and the account's own limit is what is being
+                # waited out.
+                attempt -= 1
+                await self._wait_out_rate_limit(
+                    throttled, position, total, last_error
+                )
+                continue
+
+            if response.status_code < 500 or attempt == MAX_ATTEMPTS:
                 break
             await self._backoff(attempt, position, total, last_error)
 
         raise EmbeddingError(
             f"Embedding batch {position}/{total} failed after "
-            f"{MAX_ATTEMPTS} attempts: {last_error}"
+            f"{attempt} attempt(s) and {throttled} rate-limit wait(s): "
+            f"{last_error}"
         )
+
+    async def _wait_out_rate_limit(
+        self, throttled: int, position: int, total: int, error: str
+    ) -> None:
+        """Sleep past the provider's per-minute window.
+
+        Jittered so a run that trips the limit on several batches does not
+        retry them all in lockstep and trip it again.
+        """
+        delay = RATE_LIMIT_WAIT_SECONDS + random.uniform(0, 5)
+        log.warning(
+            "embedding_rate_limited",
+            batch=f"{position}/{total}",
+            wait=throttled,
+            of=RATE_LIMIT_ATTEMPTS,
+            error=error[:120],
+            sleep_seconds=round(delay, 1),
+        )
+        await asyncio.sleep(delay)
 
     async def _backoff(
         self, attempt: int, position: int, total: int, error: str

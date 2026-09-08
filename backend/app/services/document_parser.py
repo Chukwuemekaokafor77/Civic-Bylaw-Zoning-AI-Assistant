@@ -915,6 +915,12 @@ def assemble_clauses(
     part_title: str | None = None
     definition_index = 0
     skipped_toc = 0
+    # The section an unnumbered definition sits inside. Moncton's and
+    # Saint John's definitions are alphabetical and carry no number of
+    # their own, so a number invented for them would cite a provision
+    # the bylaw does not have. They are cited under their section, with
+    # the defined term as the heading, which is how a reader finds one.
+    enclosing_number: str | None = None
     # Moncton heads a section with its title on the line above the
     # number - "Sight triangle and setback ..." then "111 (1) Minimum
     # yard requirements ...". Held here until a clause claims it.
@@ -1014,8 +1020,16 @@ def assemble_clauses(
             # the line, then the subsection heading, and only then the two
             # definition forms - otherwise a heading whose title happens
             # to contain "means" would open a definition, not a clause.
+            # The bold gate keeps prose from opening a clause. A line
+            # directly under a heading is exempt: the French column writes
+            # its section number unbolded and with a trailing period
+            # ("1. Sauf indication contraire ..."), so section 1 was never
+            # detected and every French definition was cited under a
+            # section number that does not exist.
             clause_match = (
-                scheme.clause.match(stripped) if line.starts_bold else None
+                scheme.clause.match(stripped)
+                if line.starts_bold or pending_title
+                else None
             )
             if clause_match:
                 flush()
@@ -1042,6 +1056,7 @@ def assemble_clauses(
                     parent_title=parent_title,
                     amendments=list(page.amendments),
                 )
+                enclosing_number = number
                 if not scheme.clause_titles and rest:
                     buffer.append(rest)
                 continue
@@ -1091,9 +1106,8 @@ def assemble_clauses(
             if by_means is not None:
                 flush()
                 definition_index += 1
-                fallback_part = part_number or "0"
                 current = Clause(
-                    section_number=f"{fallback_part}({definition_index})",
+                    section_number=enclosing_number or part_number or "0",
                     section_title=by_means.group(1).strip(),
                     text="",
                     page_number=page.page_number,
@@ -1129,7 +1143,7 @@ def assemble_clauses(
                 flush()
                 definition_index += 1
                 current = Clause(
-                    section_number=f"{part_number or '0'}({definition_index})",
+                    section_number=enclosing_number or part_number or "0",
                     section_title=guillemet.group(1).strip(),
                     text="",
                     page_number=page.page_number,
@@ -1271,7 +1285,7 @@ SUBSECTION_NUMBER = re.compile(r"^(\d+)\s+([A-Z][A-Z0-9 &/,'’()\-\.]{3,})$")
 # Only ever applied to a bold line, so a table row opening with a figure
 # cannot match it.
 CLAUSE_MONCTON = re.compile(
-    r"^(\d{1,3}(?:\s?\.\s?\d+)?(?:\s?\(\d+\))?)\s+(.*)$"
+    r"^(\d{1,3}(?:\s?\.\s?\d+)?(?:\s?\(\d+\))?)\.?\s+(.*)$"
 )
 
 #: "Division 8.2 Other residential uses" / "Section 8.2 Autres usages".

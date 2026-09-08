@@ -15,6 +15,7 @@ import pytest
 
 from app.services.document_parser import (
     NumberingScheme,
+    assemble_clauses,
     SCHEMES,
     ParsedPage,
     PageLine,
@@ -362,6 +363,18 @@ def make_page(lines: list[str]) -> ParsedPage:
     return ParsedPage(
         page_number=1,
         lines=[PageLine(text, False) for text in lines],
+        page_label=None,
+        part_number=None,
+        part_title=None,
+        amendments=[],
+    )
+
+
+def make_page_with_bold(lines: list[tuple[str, bool]]) -> ParsedPage:
+    """A page whose lines carry their own bold flag."""
+    return ParsedPage(
+        page_number=1,
+        lines=[PageLine(text, bold) for text, bold in lines],
         page_label=None,
         part_number=None,
         part_title=None,
@@ -771,3 +784,45 @@ def test_table_caption_still_wins_over_a_schedule_reference():
     )
     number, _ = _table_identity(page)
     assert number == "Table 12.3"
+
+
+def test_unnumbered_definition_is_cited_under_its_section():
+    """An invented number would cite a provision the bylaw does not have.
+
+    Moncton's definitions are alphabetical and unnumbered, so they are
+    cited under the section that introduces them, with the defined term
+    as the heading - which is how a reader finds one.
+    """
+    page = make_page_with_bold(
+        [
+            ("Definitions", True),
+            ("1 Unless the context requires a different meaning, the", True),
+            ("following definitions apply in this By-law.", False),
+            ("“ garden suite ” means an additional dwelling unit placed", False),
+            ("in the rear yard of an existing single unit dwelling lot.", False),
+        ]
+    )
+    clauses = assemble_clauses([page], SCHEMES["moncton"])
+    terms = {c.section_title: c.section_number for c in clauses}
+    assert terms["garden suite"] == "1"
+
+
+def test_french_section_number_carries_a_trailing_period():
+    """The French column writes "1." and does not set it in bold.
+
+    Undetected, section 1 never opens, and every French definition falls
+    back to a section number that does not exist.
+    """
+    page = make_page_with_bold(
+        [
+            ("Définitions", True),
+            ("1. Sauf indication contraire du contexte, les", False),
+            ("définitions qui suivent s’appliquent au présent arrêté.", False),
+            ("« pavillon-jardin » Logement supplémentaire implanté dans", False),
+            ("la cour arrière d’un lot d’habitation unifamiliale.", False),
+        ]
+    )
+    clauses = assemble_clauses([page], SCHEMES["moncton"])
+    terms = {c.section_title: c.section_number for c in clauses}
+    assert terms["pavillon-jardin"] == "1"
+    assert terms["Définitions"] == "1"
