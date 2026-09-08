@@ -1,0 +1,40 @@
+{
+  "municipality_id": "ns_cbrm",
+  "language": "en",
+  "bylaw_name": "CBRM Land Use By-law",
+  "notes": [
+    "CBRM's use tables are the reason this file exists. Their rows are named after the use rather than numbered, so the matrix machinery skipped them and each row flattened to text - 'Dwelling, Two Unit P P P P P P'. The table has no entry for R6, so those six marks shift one zone left and the row then says two-unit dwellings are permitted in R6, where the bylaw grants nothing, and not in R7, where it does.",
+    "The two-unit-dwelling question therefore asserts R7 is present and R6 is absent. It fails in both directions: if the row is flattened again, or if a blank cell is ever read as a prohibition rather than as an absence of entry.",
+    "The commercial table has three zone columns against a five-column minimum, which made its real header unrecognisable and let a row of 'P's stand in as the column names. That reached the database once; the zone-symbol question is what would have caught it."
+  ],
+  "questions": [
+    {
+      "id": "two-unit-dwelling-zones",
+      "question": "Which zones allow a two unit dwelling?",
+      "expect_sections": ["5.0"],
+      "expect_text": ["Dwelling, Two Unit", "R7"],
+      "why": "The row with a blank cell. R7 must be named; naming R6 instead is the shift this file exists to catch."
+    },
+    {
+      "id": "commercial-zone-symbols",
+      "question": "What uses are permitted in the mixed-use corridor commercial zone?",
+      "expect_sections": ["6.0"],
+      "expect_text": ["MUC"],
+      "why": "The commercial table's real zone codes. A row of P's once stood in as its headings, and every mark was reported against a zone called P."
+    },
+    {
+      "id": "secondary-suite-size",
+      "question": "How big can a secondary suite be?",
+      "expect_sections": ["4.19"],
+      "expect_text": ["72 square metres"],
+      "why": "A numbered heading with a trailing period (4.19.), which no other municipality writes and which matched nothing until CBRM got its own scheme."
+    },
+    {
+      "id": "one-unit-dwelling-definition",
+      "question": "What counts as a one unit dwelling?",
+      "expect_sections": ["2.13"],
+      "expect_text": ["detached dwelling"],
+      "why": "Definitions are unnumbered here and cite the section that introduces them rather than a position in the list."
+    }
+  ]
+}
