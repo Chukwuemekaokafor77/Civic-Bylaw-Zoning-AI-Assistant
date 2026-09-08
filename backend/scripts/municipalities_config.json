@@ -217,8 +217,8 @@
         }
       ],
       "notes": "The consolidation date is encoded in the URL path, so every amendment produces a new URL and the old one 404s. Change detection cannot rely on hashing a fixed URL here; the ingestion job must re-discover the current link from the CBRM planning page (https://cbrm.ns.ca/business/municipal-planing-land-use-by-laws/) before hashing. CBRM also notes that Municipal Planning Strategy and Land Use By-law documents are not listed on its main By-Laws page, so that page is the wrong discovery target.",
-      "numbering": "dotted3",
-      "numbering_note": "191 clauses but body uses 'Chapter N.' headings"
+      "numbering": "cbrm",
+      "numbering_note": "verified: 269 clauses, none oversized. Headings carry a trailing period (1.1. TITLE), which no other municipality does. Use tables are named by use rather than numbered, so matrix_named_rows is on and the rendered rows name the zone for every mark"
     },
     {
       "id": "pe_charlottetown",

@@ -826,3 +826,109 @@ def test_french_section_number_carries_a_trailing_period():
     terms = {c.section_title: c.section_number for c in clauses}
     assert terms["pavillon-jardin"] == "1"
     assert terms["Définitions"] == "1"
+
+
+# ---------------------------------------------------------------------
+#  CBRM: use tables whose rows are named rather than numbered
+# ---------------------------------------------------------------------
+
+CBRM = SCHEMES["cbrm"]
+
+
+def zone_row(label: str, marks: list[tuple[str, float]], top: float) -> list[dict]:
+    """A table row: a label at the margin, then marks at column centres."""
+    words = line_of(label, 60, top)
+    for text, x in marks:
+        words.append(word(text, x, top))
+    return words
+
+
+ZONE_COLUMNS = [("UR1", 334), ("UR2", 367), ("UR3", 400), ("UR4", 433), ("RR5", 466), ("R6", 499), ("R7", 525)]
+
+
+def use_table_lines() -> list[dict]:
+    words = []
+    for text, x in ZONE_COLUMNS:
+        words.append(word(text, x, 100))
+    # Every zone permitted.
+    words += zone_row("Dwelling, One Unit", [("P", x) for _, x in ZONE_COLUMNS], 120)
+    # R6 is blank. Flattened to text this reads "P P P P P P", which puts
+    # a permission in R6 and takes one away from R7.
+    words += zone_row(
+        "Dwelling, Two Unit",
+        [("P", x) for name, x in ZONE_COLUMNS if name != "R6"],
+        140,
+    )
+    return words
+
+
+def test_named_row_keeps_each_mark_with_its_zone():
+    """A blank cell must not shift every mark to its left.
+
+    Reading the row as text says two-unit dwellings are permitted in R6,
+    where the table has no entry, and not in R7, where it does.
+    """
+    matrix = _find_matrix(_group_lines(use_table_lines()), CBRM)
+    assert matrix is not None
+
+    rendered = _render_matrix(matrix, {})
+    two_unit = next(line for line in rendered if line.startswith("Dwelling, Two Unit"))
+    assert "R7" in two_unit
+    assert "R6" not in two_unit
+
+
+def test_numbered_scheme_ignores_named_rows():
+    """Fredericton's matrices are numbered, and stay that way.
+
+    Accepting named rows everywhere let any line ending in a symbol count
+    as a row, which changed the number its whole matrix was cited under.
+    """
+    matrix = _find_matrix(_group_lines(use_table_lines()), SCHEME)
+    assert matrix is None or not matrix.rows
+
+
+def test_zone_code_with_a_trailing_figure_is_recognised():
+    """UR1 and R7 are zone codes; the default pattern rejects both.
+
+    Unrecognised, the header line is skipped and a row of "P"s is taken
+    for the column headings instead.
+    """
+    assert CBRM.zone_code.match("UR1") is not None
+    assert CBRM.zone_code.match("R7") is not None
+
+
+def test_whole_legend_is_read_from_one_line():
+    """CBRM sets its entire legend on a single line.
+
+    Anchored on the first symbol, the meaning of P became the rest of the
+    line, and that text then appeared in every rendered row.
+    """
+    line = (
+        "P = Permitted as-of-right C = Permitted with additional conditions "
+        "SP = Site Plan Approval"
+    )
+    entries = {m.group(1): m.group(2) for m in CBRM.legend.finditer(line)}
+    assert entries == {
+        "P": "Permitted as-of-right",
+        "C": "Permitted with additional conditions",
+        "SP": "Site Plan Approval",
+    }
+
+
+@pytest.mark.parametrize(
+    "line, number",
+    [
+        ("1.1. TITLE", "1.1"),
+        ("4.22. SIGNS", "4.22"),
+        ("5.0. RESIDENTIAL USE SUMMARY TABLE", "5.0"),
+    ],
+)
+def test_cbrm_heading_carries_a_trailing_period(line, number):
+    """No other municipality writes its headings this way.
+
+    Anchored on "N.N ", not one of the bylaw's 75 headings matched, and
+    the document parsed as a single 89,904-character clause.
+    """
+    found = CBRM.clause.match(line)
+    assert found is not None
+    assert found.group(1) == number

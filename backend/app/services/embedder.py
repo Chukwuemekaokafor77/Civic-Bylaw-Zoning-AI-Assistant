@@ -294,16 +294,23 @@ class Embedder:
         return vectors
 
     def _batch_token_budget(self, requested: int) -> int:
-        """Cap a batch at what the per-minute allowance can actually pass.
+        """Cap a batch at what one request's share of the minute can pass.
 
-        Without this a batch larger than the whole minute's budget can
-        never succeed - it 429s on every attempt and exhausts the retries,
-        which is exactly how the first full ingestion run failed.
+        The budget is the minute's tokens divided by the minute's
+        requests, not the whole minute's tokens. Sizing each request at
+        the full token allowance lets the client offer three times the
+        minute's budget in a minute - the limiter paces the requests, and
+        every one of them is then rejected on tokens. Moncton's French
+        corpus failed that way twice, once through five retries and once
+        through twelve minutes of waiting: no wait clears a request that
+        does not fit.
         """
         ceiling = self._settings.embedding_tokens_per_minute
         if ceiling <= 0:
             return requested
-        return max(1, min(requested, int(ceiling * TOKEN_BUDGET_SAFETY)))
+
+        per_request = ceiling / max(1, self._settings.embedding_requests_per_minute)
+        return max(1, min(requested, int(per_request * TOKEN_BUDGET_SAFETY)))
 
     def _validate_inputs(self, texts: list[str]) -> None:
         for index, text in enumerate(texts):

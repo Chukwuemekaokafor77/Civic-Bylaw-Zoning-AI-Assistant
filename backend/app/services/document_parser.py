@@ -225,8 +225,21 @@ class NumberingScheme:
     zone_code: re.Pattern[str] = re.compile(r"^[A-Z]{1,5}(?:-\d+)?$")
     # A row label in a permission matrix: "6.4(2)(a)".
     matrix_row: re.Pattern[str] = re.compile(r"^\d+\.\d+(?:\([0-9a-zA-Z]+\))+$")
-    # Legend entry: "P = Permitted".
-    legend: re.Pattern[str] = re.compile(r"^([A-Z]{1,3})\s*=\s*(.+)$")
+    # Legend entry: "P = Permitted". Scanned rather than matched, because
+    # CBRM sets its whole legend on one line - "P = Permitted as-of-right
+    # C = Permitted with additional conditions SP = Site Plan Approval" -
+    # and anchoring on the first symbol made the meaning of P the entire
+    # rest of the line, which then appeared in every rendered row.
+    legend: re.Pattern[str] = re.compile(
+        r"\b([A-Z]{1,3})\s*=\s*(.+?)(?=\s+[A-Z]{1,3}\s*=|$)"
+    )
+
+    # Whether a matrix row may be labelled by name rather than by clause
+    # number. CBRM's use tables are labelled "Dwelling, Two Unit"; opting
+    # in per document rather than accepting both everywhere, because on a
+    # numbered matrix any stray line ending in a symbol then reads as a
+    # row and corrupts the number the whole matrix is cited under.
+    matrix_named_rows: bool = False
 
     # Whether a numbered heading carries a title. Fredericton writes
     # "8.14(4) Fences"; Moncton's numbered provisions are paragraphs of
@@ -252,7 +265,7 @@ class NumberingScheme:
 
 # Symbols that appear as matrix cells. Anything else on a matrix row means
 # the line is prose and must not be read as a table.
-MATRIX_CELL_TOKENS = {"P", "SD", "DA", "C", "X", "A", "-", "•"}
+MATRIX_CELL_TOKENS = {"P", "SD", "DA", "SP", "C", "X", "A", "-", "•"}
 
 # Column centres closer than this belong to the same matrix column.
 MATRIX_COLUMN_TOLERANCE = 14.0
@@ -516,10 +529,29 @@ def _centre(word: dict) -> float:
 
 
 @dataclass
+class _MatrixRow:
+    """One row of a permission matrix, split into its label and its cells.
+
+    The label is however many words precede the run of symbols: a clause
+    number in Fredericton ("6.4(2)(a) P P SD"), the name of the use in
+    CBRM ("Dwelling, Two Unit P P P P P P").
+    """
+
+    line: _Line
+    category: str | None
+    label_words: list[dict]
+    cells: list[dict]
+
+    @property
+    def label(self) -> str:
+        return " ".join(w["text"] for w in self.label_words)
+
+
+@dataclass
 class _Matrix:
     columns: _Line
     source: _Line
-    rows: list[tuple[_Line, str | None]]
+    rows: list[_MatrixRow]
     consumed: list[_Line]
 
 
@@ -561,10 +593,30 @@ def _find_matrix(lines: list[_Line], scheme: NumberingScheme) -> _Matrix | None:
         if not words:
             continue
 
-        label, cells = words[0], words[1:]
-        if not scheme.matrix_row.match(label["text"]):
-            # An all-caps line between rows is the sign-type banner for the
-            # rows beneath it ("CANOPY", "SANDWICH BOARD"). Captured so the
+        # The cells are the trailing run of symbols; whatever precedes
+        # them is the label. Requiring a single-word label would miss
+        # every row of a table whose rows are named rather than numbered,
+        # and those rows then flatten to "Dwelling, Two Unit P P P P P P"
+        # - which silently shifts each mark one zone to the left wherever
+        # a cell is blank.
+        split = len(words)
+        while split > 0 and words[split - 1]["text"] in MATRIX_CELL_TOKENS:
+            split -= 1
+        label_words, cells = words[:split], words[split:]
+
+        # A numbered label stands as a row even with no cells at all:
+        # "6.4(2)(a)" alone means that provision has no entry in any
+        # listed zone, which is a fact worth rendering rather than a line
+        # to drop. A named label needs at least one cell, because without
+        # one there is nothing to distinguish it from a banner.
+        numbered = (
+            len(label_words) == 1
+            and scheme.matrix_row.match(label_words[0]["text"]) is not None
+        )
+        named = scheme.matrix_named_rows and bool(cells)
+        if not label_words or not (numbered or named):
+            # An all-caps line between rows is the banner for the rows
+            # beneath it ("CANOPY", "SANDWICH BOARD"). Captured so the
             # rendered rows say what they are about, and consumed so it
             # does not drift into a neighbouring clause as loose text.
             text = line.text.strip()
@@ -573,12 +625,7 @@ def _find_matrix(lines: list[_Line], scheme: NumberingScheme) -> _Matrix | None:
                 consumed.append(line)
             continue
 
-        # Zero cells is itself a fact: that row has no entry in any listed
-        # zone. Accepted here so the row is consumed rather than falling
-        # through to be parsed as a clause whose "title" is the next
-        # banner line.
-        if all(c["text"] in MATRIX_CELL_TOKENS for c in cells):
-            rows.append((line, category))
+        rows.append(_MatrixRow(line, category, label_words, cells))
 
     if header is None or not rows:
         return None
@@ -595,12 +642,11 @@ def _render_matrix(matrix: _Matrix, legend: dict[str, str]) -> list[str]:
         key = "; ".join(f"{sym} = {meaning}" for sym, meaning in legend.items())
         rendered.append(f"Legend: {key}.")
 
-    for row, category in rows:
-        label = row.words[0]["text"]
-        prefix = f"{category} {label}" if category else label
+    for row in rows:
+        prefix = f"{row.category} {row.label}" if row.category else row.label
         by_symbol: dict[str, list[str]] = collections.defaultdict(list)
 
-        for cell in row.words[1:]:
+        for cell in row.cells:
             centre = _centre(cell)
             nearest = min(columns, key=lambda col: abs(col[0] - centre))
             if abs(nearest[0] - centre) <= MATRIX_COLUMN_TOLERANCE:
@@ -697,18 +743,28 @@ def parse_page(
     if matrix is not None:
         legend = {}
         for line in lines:
-            found = scheme.legend.match(line.text.strip())
-            if found:
+            for found in scheme.legend.finditer(line.text.strip()):
                 legend[found.group(1)] = found.group(2).strip()
 
         matrix_lines = _render_matrix(matrix, legend)
+
+        # Numbered rows share a stem - "6.4(1)", "6.4(2)" - and that stem
+        # is what the matrix is cited under. Named rows have none, so the
+        # number comes from the page's own heading instead; without it the
+        # table is cited as "?" and a reader cannot look it up.
         matrix_number = _common_clause_prefix(
-            [row.words[0]["text"] for row, _ in matrix.rows]
+            [row.label_words[0]["text"] for row in matrix.rows]
         )
+        if matrix_number is None:
+            for line in lines:
+                heading = scheme.clause.match(line.text.strip())
+                if heading:
+                    matrix_number = heading.group(1)
+                    break
 
         consumed = {
             id(matrix.source),
-            *(id(row) for row, _ in matrix.rows),
+            *(id(row.line) for row in matrix.rows),
             *(id(line) for line in matrix.consumed),
         }
         remaining = [ln for ln in lines if id(ln) not in consumed]
@@ -915,6 +971,10 @@ def assemble_clauses(
     part_title: str | None = None
     definition_index = 0
     skipped_toc = 0
+    # A use table running over several pages carries its heading only on
+    # the first. The continuation pages are the same table, so they are
+    # cited under the same number rather than as "?".
+    last_matrix_number: str | None = None
     # The section an unnumbered definition sits inside. Moncton's and
     # Saint John's definitions are alphabetical and carry no number of
     # their own, so a number invented for them would cite a provision
@@ -956,12 +1016,16 @@ def assemble_clauses(
 
         if page.matrix_lines:
             flush()
+            if page.matrix_number:
+                last_matrix_number = page.matrix_number
             matrix_part = (
                 page.matrix_number.split(".")[0] if page.matrix_number else None
             )
             clauses.append(
                 Clause(
-                    section_number=page.matrix_number or (part_number or "?"),
+                    section_number=(
+                        page.matrix_number or last_matrix_number or part_number or "?"
+                    ),
                     section_title=page.matrix_title or "Permissions by zone",
                     text=_clean_text("\n".join(page.matrix_lines)),
                     page_number=page.page_number,
@@ -1309,6 +1373,16 @@ CLAUSE_SAINTJOHN = re.compile(r"^([1-9]\d?\.\d+(?:\(\d+[a-z]?\))?)\s+([A-Z\[].*)
 #: part name, so the part is only ever named here.
 SUBSECTION_SAINTJOHN = re.compile(r"^([1-9]\d?)\s+([A-Z][A-Za-z].{3,})$")
 
+
+#: "1.1. TITLE", "4.22. SIGNS" - CBRM. The trailing period is part of the
+#: heading, so a pattern anchored on "N.N " never matched one and all 75
+#: of the bylaw's headings were invisible: the document parsed as a
+#: single 89,904-character clause.
+CLAUSE_CBRM = re.compile(r"^(\d{1,2}\.\d{1,2})\.\s+(\S.*)$")
+
+#: "2. DEFINITIONS" - the part heading, one number and a caps title.
+SUBSECTION_CBRM = re.compile(r"^(\d{1,2})\.\d?\s+([A-Z][A-Z0-9 &/,'\u2019()\-\.]{3,})$")
+
 SCHEMES: dict[str, NumberingScheme] = {
     "paren": NumberingScheme(),
     "moncton": NumberingScheme(
@@ -1319,6 +1393,17 @@ SCHEMES: dict[str, NumberingScheme] = {
     "saintjohn": NumberingScheme(
         clause=CLAUSE_SAINTJOHN,
         subsection=SUBSECTION_SAINTJOHN,
+    ),
+    "cbrm": NumberingScheme(
+        clause=CLAUSE_CBRM,
+        subsection=SUBSECTION_CBRM,
+        # Rows are named after the use rather than numbered.
+        matrix_named_rows=True,
+        # CBRM's zone codes carry a trailing figure - UR1, RR5, R6 - which
+        # the default pattern rejects, so the zone header of every use
+        # table went unrecognised and a row of "P"s was taken for the
+        # column headings instead.
+        zone_code=re.compile(r"^[A-Z]{1,4}\d{0,2}(?:-\d+)?$"),
     ),
     "dotted3": NumberingScheme(
         clause=CLAUSE_DOTTED3,
