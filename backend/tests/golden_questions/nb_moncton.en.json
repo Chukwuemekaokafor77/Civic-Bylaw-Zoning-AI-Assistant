@@ -1,0 +1,53 @@
+{
+  "municipality_id": "nb_moncton",
+  "language": "en",
+  "bylaw_name": "By-law Z-222 Zoning By-law",
+  "notes": [
+    "Moncton publishes one document with English and French side by side on every line. The risk this file exists to catch is language bleed: an English question retrieving a chunk that is half French, or a clause whose text interleaves the two ('158 No development shall be permitted and no main 158 Les aménagements ne sont permis et les').",
+    "expect_text therefore pins English sentences that sit directly beside their French translation in the source. If the gutter split regresses, the clause text will carry French and these fail.",
+    "Definitions are cited under section 1 with the defined term as the heading. Moncton numbers none of them, so a positional number would cite a provision that does not exist."
+  ],
+  "questions": [
+    {
+      "id": "garden-suite-definition",
+      "question": "What is a garden suite?",
+      "expect_sections": ["1"],
+      "expect_text": ["additional dwelling unit", "rear yard"],
+      "why": "Definitions are unbolded and quoted in this bylaw, so the bold gate blocked every one of them until quotes were treated as the marker."
+    },
+    {
+      "id": "garden-suite-vocabulary",
+      "question": "Can I put a granny flat in my back yard for my mother?",
+      "expect_sections": ["95(7)", "95(8)", "1"],
+      "why": "The bylaw never says 'granny flat'. Only semantic retrieval bridges this."
+    },
+    {
+      "id": "garden-suite-count",
+      "question": "How many garden suites can I have on one lot?",
+      "expect_sections": ["95(8)"],
+      "expect_text": ["No more than one garden suite"],
+      "why": "A numbered provision with no inline title. Read as titled, its first line became a truncated heading and the text began mid-sentence."
+    },
+    {
+      "id": "backyard-hens",
+      "question": "Can I keep chickens in my back yard?",
+      "expect_sections": ["100(1)", "100(2)"],
+      "expect_text": ["chicken coop", "0.37 square metres"],
+      "why": "Urban agriculture. expect_text pins the coop standards, which sat on a page whose French column had to be separated out."
+    },
+    {
+      "id": "hen-slaughter",
+      "question": "Am I allowed to slaughter hens on my property?",
+      "expect_sections": ["100(5)"],
+      "expect_text": ["not permitted"],
+      "why": "A short provision whose French translation sits on the same line; language bleed shows up here first."
+    },
+    {
+      "id": "residential-lot-requirements",
+      "question": "What is the minimum lot area for a semi-detached dwelling?",
+      "expect_sections": ["Table 12.3", "143"],
+      "expect_text": ["315 m2"],
+      "why": "A full-width bilingual table. Splitting it at the gutter would have severed each zone column from its values, so the table is deliberately kept whole and cited by its caption."
+    }
+  ]
+}
