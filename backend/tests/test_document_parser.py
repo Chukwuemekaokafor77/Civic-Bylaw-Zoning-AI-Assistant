@@ -932,3 +932,27 @@ def test_cbrm_heading_carries_a_trailing_period(line, number):
     found = CBRM.clause.match(line)
     assert found is not None
     assert found.group(1) == number
+
+
+def test_row_of_symbols_is_never_taken_for_a_zone_header():
+    """A table with few zone columns must not adopt a row of cells.
+
+    CBRM's commercial table has three zone columns. Below the column
+    minimum its real header was skipped, the first row of "P"s was taken
+    for the headings, and every mark was then reported as permitted in a
+    zone named "P" - which reached the database before anyone read it.
+    """
+    columns = [("CRC", 334), ("MUC", 400), ("MU", 466)]
+
+    words = [word(name, x, 100) for name, x in columns]
+    words += zone_row("Dwelling, One Unit", [("P", x) for _, x in columns], 120)
+    words += zone_row("Live-work unit", [("P", x) for _, x in columns[:2]], 140)
+
+    matrix = _find_matrix(_group_lines(words), CBRM)
+    assert matrix is not None
+    assert [w["text"] for w in matrix.columns.words] == ["CRC", "MUC", "MU"]
+
+    rendered = _render_matrix(matrix, {})
+    live_work = next(line for line in rendered if line.startswith("Live-work"))
+    assert "CRC" in live_work and "MUC" in live_work
+    assert "MU." not in live_work and ": P" not in live_work

@@ -146,6 +146,10 @@ def _strip_accents(text: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
+# Below this many columns it is not a matrix, just a short line.
+MIN_MATRIX_COLUMNS = 5
+
+
 @dataclass(frozen=True)
 class NumberingScheme:
     """Regexes describing one municipality's clause numbering.
@@ -241,6 +245,10 @@ class NumberingScheme:
     # row and corrupts the number the whole matrix is cited under.
     matrix_named_rows: bool = False
 
+    # How many columns a zone header needs. CBRM's commercial table has
+    # three, and demanding five made it unrecognisable.
+    matrix_min_columns: int = MIN_MATRIX_COLUMNS
+
     # Whether a bracketed clause number is qualified by its parent. In
     # St. John's zone chapters "(1) PERMITTED USES" appears under every
     # zone, so the number alone names 43 different provisions.
@@ -274,10 +282,6 @@ MATRIX_CELL_TOKENS = {"P", "SD", "DA", "SP", "C", "X", "A", "-", "•"}
 
 # Column centres closer than this belong to the same matrix column.
 MATRIX_COLUMN_TOLERANCE = 14.0
-
-# Below this many columns it is not a matrix, just a short line.
-MIN_MATRIX_COLUMNS = 5
-
 
 @dataclass
 class Clause:
@@ -589,7 +593,15 @@ def _find_matrix(lines: list[_Line], scheme: NumberingScheme) -> _Matrix | None:
                     run.append(word)
                 else:
                     break
-            if len(run) >= MIN_MATRIX_COLUMNS:
+            # A run of identical symbols is a row of cells, not a
+            # heading. Without this a table with fewer zone columns than
+            # the minimum skips its real header and takes the first row
+            # of "P"s instead, and every mark is then reported against a
+            # zone named "P".
+            if all(w["text"] in MATRIX_CELL_TOKENS for w in run):
+                continue
+
+            if len(run) >= scheme.matrix_min_columns:
                 run.reverse()
                 header = _Line(line.top, run)
                 header_source = line
@@ -1481,6 +1493,7 @@ SCHEMES: dict[str, NumberingScheme] = {
         subsection=SUBSECTION_CBRM,
         # Rows are named after the use rather than numbered.
         matrix_named_rows=True,
+        matrix_min_columns=3,
         # CBRM's zone codes carry a trailing figure - UR1, RR5, R6 - which
         # the default pattern rejects, so the zone header of every use
         # table went unrecognised and a row of "P"s was taken for the
