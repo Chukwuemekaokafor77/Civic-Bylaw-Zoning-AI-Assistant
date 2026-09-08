@@ -28,6 +28,7 @@ from app.services.document_parser import (
     _looks_like_contents,
     _looks_like_divider,
     _looks_like_term_index,
+    _legend_meaning,
     _looks_like_toc,
     _table_identity,
     _render_matrix,
@@ -956,3 +957,41 @@ def test_row_of_symbols_is_never_taken_for_a_zone_header():
     live_work = next(line for line in rendered if line.startswith("Live-work"))
     assert "CRC" in live_work and "MUC" in live_work
     assert "MU." not in live_work and ": P" not in live_work
+
+
+def test_overlay_column_does_not_hide_the_zone_header():
+    """Fredericton's sign matrix header ends with the overlay code "-H".
+
+    The header is found by scanning back from the end of the line, so one
+    unrecognised token there hid the whole heading and a row of symbols
+    was used instead. Every sign type on that page was reported as
+    permitted in a zone called "P" - and it had been in the corpus since
+    the first ingestion.
+    """
+    header = line_of("Development Agreement I-2 IEX RT BI GI HI INF -H", 60, 100)
+    rows = zone_row(
+        "6.4(1)",
+        [("P", 200), ("P", 260), ("P", 320), ("P", 380), ("SD", 440)],
+        120,
+    )
+
+    matrix = _find_matrix(_group_lines(header + rows), SCHEME)
+    assert matrix is not None
+    assert [w["text"] for w in matrix.columns.words][-1] == "-H"
+    assert "P" not in [w["text"] for w in matrix.columns.words]
+
+
+@pytest.mark.parametrize(
+    "meaning, expected",
+    [
+        # The banner shares the legend's line and is not part of what the
+        # symbol means; left in, it repeats in every rendered row.
+        ("Permitted LIMITED DEVELOPMENT ZONES", "Permitted"),
+        ("Permitted", "Permitted"),
+        ("Permitted as-of-right", "Permitted as-of-right"),
+        ("Site Plan Approval", "Site Plan Approval"),
+        ("Permitted with additional conditions", "Permitted with additional conditions"),
+    ],
+)
+def test_legend_meaning_drops_a_trailing_banner(meaning, expected):
+    assert _legend_meaning(meaning) == expected
