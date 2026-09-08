@@ -199,8 +199,54 @@ async def _check_supabase(settings: Settings, client: httpx.AsyncClient) -> Depe
     return DependencyStatus(name="supabase", ok=True, latency_ms=latency)
 
 
+async def _check_retrieval(request: Request) -> DependencyStatus:
+    """Embed one short query and search with it, end to end.
+
+    The only check that can tell a working process from one whose
+    embeddings no longer fit the column they are searched against. Key
+    presence cannot: a server left running across the move from Gemini at
+    1536 dimensions to Voyage at 1024 held a valid key for a provider it
+    was no longer configured to use, and answered nothing for a day while
+    readiness reported ok.
+
+    Opt-in, because it spends one metered embedding per call.
+    """
+    started = time.perf_counter()
+    try:
+        retriever: HybridRetriever = request.app.state.retriever
+        response = (
+            await retriever._store._client.table("municipalities")
+            .select("id")
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            return DependencyStatus(
+                name="retrieval",
+                ok=False,
+                detail="no active municipality to probe against",
+            )
+
+        result = await retriever.retrieve("zoning", rows[0]["id"], language="en")
+        return DependencyStatus(
+            name="retrieval",
+            ok=True,
+            detail=f"{len(result.chunks)} chunk(s) from {rows[0]['id']}",
+            latency_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+    except Exception as exc:  # noqa: BLE001 - the failure is the answer
+        return DependencyStatus(
+            name="retrieval",
+            ok=False,
+            detail=f"{type(exc).__name__}: {exc}"[:300],
+            latency_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+
+
 @app.get("/health/ready", response_model=HealthResponse, tags=["health"])
-async def readiness(request: Request) -> JSONResponse:
+async def readiness(request: Request, deep: bool = False) -> JSONResponse:
     """Readiness: can the app actually reach its dependencies?
 
     This is the Phase 1 exit check ("Supabase reachable from both").
@@ -210,20 +256,30 @@ async def readiness(request: Request) -> JSONResponse:
     settings = get_settings()
     deps = [await _check_supabase(settings, request.app.state.http)]
 
-    # Key presence only. Groq is metered and Gemini is quota-limited, so
-    # readiness must not spend either on every probe; real calls are
-    # exercised in Phases 2 and 3.
+    # Key presence only. Groq and Voyage are both metered, so readiness
+    # must not spend either on every probe.
     #
-    # Truthiness, not `is not None`: an env file containing `GEMINI_API_KEY=`
+    # Truthiness, not `is not None`: an env file containing `VOYAGE_API_KEY=`
     # parses to SecretStr("") rather than None. SecretStr defines __len__, so
     # an empty one is falsy but not None — checking identity here would report
     # a blank key as healthy, which is exactly the deploy mistake this probe
     # exists to catch.
+    #
+    # The embedding provider is named and its dimensions reported, because
+    # a probe that only answers "ok" cannot distinguish a working process
+    # from one left running across a provider change. A server outlived the
+    # move from Gemini at 1536 dimensions to Voyage at 1024, kept embedding
+    # every question at the old width, and had each one rejected by a
+    # VECTOR(1024) column - while this endpoint reported ok throughout.
     deps.append(
         DependencyStatus(
-            name="gemini_key",
-            ok=bool(settings.gemini_api_key),
-            detail=None if settings.gemini_api_key else "GEMINI_API_KEY not set (needed from Phase 2)",
+            name="embedding_key",
+            ok=bool(settings.voyage_api_key),
+            detail=(
+                f"{settings.embedding_model} @ {settings.embedding_dimensions}d"
+                if settings.voyage_api_key
+                else "VOYAGE_API_KEY not set; no question can be answered"
+            ),
         )
     )
     deps.append(
@@ -234,6 +290,9 @@ async def readiness(request: Request) -> JSONResponse:
         )
     )
 
+    if deep:
+        deps.append(await _check_retrieval(request))
+
     all_ok = all(d.ok for d in deps)
     body = HealthResponse(
         status="ok" if all_ok else "degraded",
@@ -242,9 +301,11 @@ async def readiness(request: Request) -> JSONResponse:
         checked_at=datetime.now(timezone.utc),
         dependencies=deps,
     )
-    supabase_ok = deps[0].ok
+    # A deep probe that failed means the app cannot answer, which is what
+    # not-ready is for; a shallow one still turns only on Supabase.
+    ready = all_ok if deep else deps[0].ok
     return JSONResponse(
-        status_code=200 if supabase_ok else 503,
+        status_code=200 if ready else 503,
         content=body.model_dump(mode="json"),
     )
 
