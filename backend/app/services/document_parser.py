@@ -723,6 +723,13 @@ def parse_page(
     else:
         lines = _linearise_columns(lines, page_width or page.width, scheme)
 
+    # A schedule page belongs to no section. Left in the clause flow, its
+    # caption and its rotated margin stamps append to whichever section
+    # came last - Saint John's final section absorbed thirty such pages.
+    standalone = bool(lines) and bool(
+        SCHEDULE_CAPTION.match(lines[0].text.strip())
+    )
+
     return ParsedPage(
         page_number=page.page_number,
         lines=[PageLine(ln.text, ln.starts_bold) for ln in lines],
@@ -733,6 +740,7 @@ def parse_page(
         matrix_number=matrix_number,
         matrix_title=matrix_title,
         matrix_lines=matrix_lines,
+        standalone=standalone,
     )
 
 
@@ -747,34 +755,78 @@ def _common_clause_prefix(labels: list[str]) -> str | None:
 # ---------------------------------------------------------------------
 
 
+#: "Schedule K: Spruce Lake Industrial (SLI) Zone Setbacks". A schedule
+#: is a map or chart with a caption, and it is cited by that caption.
+SCHEDULE_CAPTION = re.compile(
+    r"^Schedule\s+([A-Z]{1,2})\s*[:.\-\u2013]\s*(.+)$", re.IGNORECASE
+)
+
 TABLE_CAPTION = re.compile(r"^(?:TABLE|TABLEAU)\s+(\d+(?:\.\d+)*)\b(.*)$", re.IGNORECASE)
 
 
 def _table_identity(page: ParsedPage) -> tuple[str | None, str | None]:
-    """Number and title for a standalone table page, from its caption.
+    """Number and title for a standalone page, from its caption.
 
     A caption is what makes the page citable. "TABLE 12.1" is how the
     surrounding clauses refer to it ("listed in Table 12.1"), so citing it
-    that way lets a reader follow the reference.
+    that way lets a reader follow the reference. Schedules are referred to
+    the same way ("as delineated by Schedule C").
     """
     for line in page.lines[:12]:
-        found = TABLE_CAPTION.match(line.text.strip())
+        text = line.text.strip()
+        found = TABLE_CAPTION.match(text)
         if found:
             title = found.group(2).strip(" -\u2013")
             return f"Table {found.group(1)}", title or None
+
+        found = SCHEDULE_CAPTION.match(text)
+        if found:
+            return f"Schedule {found.group(1).upper()}", found.group(2).strip()
     return None, None
+
+
+#: A trailing page reference, in the two forms bylaws use: Fredericton's
+#: "2-1", and Saint John's dot leader running out to "247".
+TOC_PAGE_REFERENCE = re.compile(r"\s\d+\s*[-–]\s*\d+$")
+TOC_DOT_LEADER = re.compile(r"\.{4,}\s*\d+\s*$")
+
+#: A tab-index entry: a part name with its number, "Residential Zones 10".
+TAB_INDEX_ENTRY = re.compile(r"^[A-Z][A-Za-z ,:&/-]{3,60}\s+\d{1,2}$")
+TAB_INDEX_MIN_LINES = 8
+TAB_INDEX_RATIO = 0.6
 
 
 def _looks_like_toc(page: ParsedPage) -> bool:
     """Table-of-contents pages repeat every heading and must not be chunked.
 
-    They are dense in trailing page references ("2-1"), which body prose
-    never is.
+    They are dense in trailing page references, which body prose never is.
     """
     if not page.lines:
         return False
-    refs = sum(1 for ln in page.lines if re.search(r"\s\d+\s*[-–]\s*\d+$", ln.text))
+    refs = sum(
+        1
+        for ln in page.lines
+        if TOC_PAGE_REFERENCE.search(ln.text) or TOC_DOT_LEADER.search(ln.text)
+    )
     return refs >= max(3, len(page.lines) // 3)
+
+
+def _looks_like_divider(page: ParsedPage) -> bool:
+    """A part divider carrying only the document's tab index.
+
+    Saint John opens each part with a page listing every part and its
+    number, and nothing else. The list states no rule, but it does name
+    fourteen parts, so leaving it in appends that list to whichever
+    clause was open and puts "Residential Zones 10" inside a provision
+    about parking.
+
+    Measured at 0.76-0.81 on those pages against 0.03 on any other.
+    """
+    lines = [ln.text.strip() for ln in page.lines if ln.text.strip()]
+    if len(lines) < TAB_INDEX_MIN_LINES:
+        return False
+    entries = sum(1 for text in lines if TAB_INDEX_ENTRY.match(text))
+    return entries / len(lines) >= TAB_INDEX_RATIO
 
 
 
@@ -881,6 +933,7 @@ def assemble_clauses(
             _looks_like_toc(page)
             or _looks_like_contents(page)
             or _looks_like_term_index(page)
+            or _looks_like_divider(page)
         ):
             skipped_toc += 1
             continue
@@ -1226,12 +1279,32 @@ SUBSECTION_DIVISION = re.compile(
     r"^(?:Division|Section)\s+(\d+\.\d+)\s+(.+)$", re.IGNORECASE
 )
 
+
+#: Saint John heads a section either way: "4.2(5) PARKING LOT STANDARDS"
+#: or "4.4 Drive-Thru Facilities". Recognising only the first merged
+#: everything under a title-case heading into the clause above it - one
+#: clause ran from parking standards to signs, thirty pages later.
+#:
+#: The title must open with a capital, which is what separates a heading
+#: from a bold table cell: "0.25 square metres for each face" carries a
+#: section-shaped number and lowercase prose.
+CLAUSE_SAINTJOHN = re.compile(r"^([1-9]\d?\.\d+(?:\(\d+[a-z]?\))?)\s+([A-Z\[].*)$")
+
+#: The part heading: "5 General Provisions: Accessory Buildings and
+#: Structures". Saint John's running header is a tab index rather than a
+#: part name, so the part is only ever named here.
+SUBSECTION_SAINTJOHN = re.compile(r"^([1-9]\d?)\s+([A-Z][A-Za-z].{3,})$")
+
 SCHEMES: dict[str, NumberingScheme] = {
     "paren": NumberingScheme(),
     "moncton": NumberingScheme(
         clause=CLAUSE_MONCTON,
         subsection=SUBSECTION_DIVISION,
         clause_titles=False,
+    ),
+    "saintjohn": NumberingScheme(
+        clause=CLAUSE_SAINTJOHN,
+        subsection=SUBSECTION_SAINTJOHN,
     ),
     "dotted3": NumberingScheme(
         clause=CLAUSE_DOTTED3,

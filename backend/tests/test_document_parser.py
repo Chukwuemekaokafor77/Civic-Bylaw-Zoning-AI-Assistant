@@ -25,8 +25,10 @@ from app.services.document_parser import (
     _linearise_columns,
     _line_is_bilingual_prose,
     _looks_like_contents,
+    _looks_like_divider,
     _looks_like_term_index,
     _looks_like_toc,
+    _table_identity,
     _render_matrix,
     _strip_amendments,
     source_hash,
@@ -647,3 +649,125 @@ def test_definitions_section_is_not_mistaken_for_the_index():
         ]
     )
     assert _looks_like_term_index(page) is False
+
+
+# ---------------------------------------------------------------------
+#  Saint John: two heading forms, dot leaders, tab-index dividers
+# ---------------------------------------------------------------------
+
+SAINT_JOHN = SCHEMES["saintjohn"]
+
+
+@pytest.mark.parametrize(
+    "line, number, title",
+    [
+        ("4.2(5) PARKING LOT STANDARDS", "4.2(5)", "PARKING LOT STANDARDS"),
+        # The title-case form. Recognising only the first left one clause
+        # running from parking standards to signs, thirty pages later.
+        ("4.4 Drive-Thru Facilities", "4.4", "Drive-Thru Facilities"),
+        ("15.3 Trinity Royal Street Wall", "15.3", "Trinity Royal Street Wall"),
+    ],
+)
+def test_saint_john_heads_a_section_either_way(line, number, title):
+    found = SAINT_JOHN.clause.match(line)
+    assert found is not None
+    assert found.group(1) == number
+    assert found.group(2) == title
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A bold table cell carrying a section-shaped number. Read as a
+        # heading, it opens a clause numbered 0.25.
+        "0.25 square metres for each face",
+        "0.5 square metres total of all faces",
+    ],
+)
+def test_bold_table_cell_is_not_a_saint_john_heading(line):
+    assert SAINT_JOHN.clause.match(line) is None
+
+
+def test_dot_leader_contents_page_is_recognised():
+    """Saint John's contents run a dot leader out to the page number."""
+    page = make_page(
+        [
+            "SCHEDULE A: ZONING MAP..................................... 247",
+            "SCHEDULE B: FEES........................................... 251",
+            "SCHEDULE C: UPTOWN PARKING EXEMPTION AREA.................. 252",
+            "SCHEDULE D: INTENSIFICATION AREAS.......................... 255",
+        ]
+    )
+    assert _looks_like_toc(page) is True
+
+
+def test_tab_index_divider_page_is_skipped():
+    """A part divider lists every part and states no rule.
+
+    Left in, it appends "Residential Zones 10" to whichever clause was
+    open - which is how the sidebar ended up inside fourteen of
+    Fredericton's clauses.
+    """
+    page = make_page(
+        [
+            "Administration 1",
+            "Zones and Administration 2",
+            "Definitions 3",
+            "General Provisions: Access, Parking, and Loading 4",
+            "General Provisions: Landscaping and Amenity Space 6",
+            "General Provisions: Signs 7",
+            "General Provisions: Other Standards 8",
+            "Residential Zones 10",
+            "Commercial Zones 11",
+            "Industrial Zones 12",
+            "Community Facility Zones 13",
+            "Other Zones 14",
+        ]
+    )
+    assert _looks_like_divider(page) is True
+
+
+def test_page_of_provisions_is_not_mistaken_for_a_divider():
+    page = make_page(
+        [
+            "(a) A parking lot involving five or more parking spaces located",
+            "on a lot in the Primary Development Area shall be developed and",
+            "maintained with a paved surface enclosed with permanent curbing.",
+            "(b) A parking lot involving five or more parking spaces located",
+            "outside of the Primary Development Area shall be developed and",
+            "maintained with a paved surface.",
+            "(c) Any storey above the maximum street wall height shall step",
+            "back at a minimum depth of 3 metres away from the street facade.",
+            "Maximum Height: 12",
+            "Minimum Side Yard: 3",
+        ]
+    )
+    assert _looks_like_divider(page) is False
+
+
+def test_schedule_page_is_cited_by_its_caption():
+    """A schedule is a map, not part of the clause flow.
+
+    Its caption is how the provisions refer to it ("as delineated by
+    Schedule C"), so that is what it is cited as.
+    """
+    page = make_page(
+        [
+            "Schedule K: Spruce Lake Industrial (SLI) Zone Setbacks",
+            "[2025, C.P. 111-196]",
+        ]
+    )
+    number, title = _table_identity(page)
+    assert number == "Schedule K"
+    assert title == "Spruce Lake Industrial (SLI) Zone Setbacks"
+
+
+def test_table_caption_still_wins_over_a_schedule_reference():
+    page = make_page(
+        [
+            "TABLE 12.3 RESIDENTIAL ZONES LOT REQUIREMENTS TABLE",
+            "as delineated by Schedule C: Uptown Parking Exemption Area",
+        ]
+    )
+    number, _ = _table_identity(page)
+    assert number == "Table 12.3"
