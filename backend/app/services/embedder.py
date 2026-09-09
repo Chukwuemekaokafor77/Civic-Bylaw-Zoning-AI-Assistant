@@ -1,175 +1,149 @@
-"""Gemini embedding wrapper (Phase 2, Step 1).
+"""Voyage embedding wrapper (Phase 2, Step 1).
 
-Single entry point for turning text into `VECTOR(1536)` values. Both sides
+Single entry point for turning text into `VECTOR(1024)` values. Both sides
 of retrieval go through here - the ingestion CLI embedding thousands of
 bylaw clauses, and the request path embedding one user query - so that
 document and query vectors can never be produced by different models or
 dimensions. A mismatch there does not raise; it silently returns bad
 neighbours, which for this application means confidently-cited wrong law.
 
-Provider note: Section 1 of the spec names OpenAI `text-embedding-3-small`.
-This uses Gemini `gemini-embedding-001` instead, at explicit user
-direction, because it has a free tier that needs no prepayment. The switch
-is deliberately invisible to the rest of the system:
+Provider note. Section 1 names OpenAI `text-embedding-3-small`. This has
+since run on Gemini and on a local model, and now runs on Voyage, each
+change at explicit user direction. The reasons, in order:
 
-* 1536 dimensions is a supported Matryoshka output size, so `VECTOR(1536)`,
-  the HNSW cosine index and the `<=>` operator in `match_bylaw_chunks` are
-  all untouched.
-* The 8,192-token input ceiling matches the OpenAI model's, so the chunk
-  size guard below is unchanged.
-* The model is multilingual, which the locked EN/FR scope requires.
+* OpenAI needs a $5 prepayment, which was not wanted.
+* Gemini's free tier allows 1,000 embeddings per DAY. One bilingual
+  municipality is ~1,340 chunks, so the nine-municipality pilot was a
+  week of trickling and the national corpus was unreachable.
+* A local model (bge-m3) removed the quota but cost 0.6s of CPU per query
+  on every user request, and separated a right answer from a wrong one by
+  only 0.049 cosine.
 
-`gemini-embedding-001` is chosen over the newer `gemini-embedding-2`
-deliberately. Given a list of inputs, `-2` returns ONE aggregated vector
-rather than one vector per input, and it does not accept `task_type`.
-Aggregation would silently collapse a batch of clauses into a single
-meaningless embedding, so the count check in `_embed_batch` is treated as
-load-bearing rather than defensive.
+Voyage resolves all three: a 200M-token free grant with no daily cap,
+0.28s query latency, and a 0.081 margin on the same comparison. It also
+emits 1024 dimensions natively, which is what `bylaw_chunks.embedding` was
+migrated to in 003 - so this provider change needs no schema change.
 
 Design notes:
 
-* Batched, with an order guard. Unlike OpenAI, Gemini returns no per-item
-  index - results are positional only. There is therefore nothing to sort
-  by, and a count mismatch is the only available signal that the response
-  does not line up with the request. It is treated as fatal: pairing a
-  clause with another clause's vector corrupts citations in a way nothing
-  short of a semantic eval would catch.
+* Order-preserving. The API returns an `index` per item and does not
+  guarantee response order; results are sorted on it explicitly. Trusting
+  arrival order would attach one clause's vector to another clause's row -
+  corruption that nothing short of a semantic eval would catch.
 
-* Task-typed. Documents are embedded as RETRIEVAL_DOCUMENT and queries as
-  RETRIEVAL_QUERY, which is what the model expects for asymmetric search.
-
-* Normalised. Truncated Matryoshka outputs from this model are not unit
-  length. Cosine distance is magnitude-invariant so ranking would survive,
-  but normalising keeps stored vectors consistent and makes the RPC's
-  `1 - (embedding <=> query)` a true similarity in [0, 1].
+* Task-typed. Documents are embedded as `document` and queries as `query`,
+  the asymmetric mode the model expects.
 
 * Fails loudly on oversized input. Silently truncating a clause would drop
-  bylaw text from the indexed corpus while still producing a plausible
-  vector and a valid-looking citation. An oversized clause is the
-  chunker's problem to fix, so this raises instead.
+  bylaw text from the corpus while still producing a plausible vector and
+  a valid-looking citation. An oversized clause is the chunker's problem.
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
-import math
 import random
-import re
 import time
 from functools import lru_cache
 
+import httpx
 import structlog
-from google import genai
-from google.genai import types
-from google.genai.errors import APIError, ClientError, ServerError
 
 from app.config import Settings, get_settings
 
 log = structlog.get_logger(__name__)
 
+API_URL = "https://api.voyageai.com/v1/embeddings"
 
-# ---------------------------------------------------------------------
-#  Provider limits
-#
-#  gemini-embedding-001 accepts 8,192 tokens per input. The batch
-#  defaults sit well under the request ceiling: legal clauses carry the
-#  Section 4 context prefix and can be long, and a smaller batch fails
-#  cheaper when a run hits the free-tier rate limit mid-ingestion.
-# ---------------------------------------------------------------------
+# voyage-4 series accepts 32,000 tokens per input, far above any chunk the
+# Section 4 chunker produces. The guard below is kept well under it.
+MAX_TOKENS_PER_INPUT = 32_000
 
-MAX_TOKENS_PER_INPUT = 8191
-MAX_INPUTS_PER_REQUEST = 100
+# Inputs per request. The API accepts up to 1,000, but a batch also has
+# to fit inside the account's per-minute token allowance or it can never
+# succeed: a 96-chunk batch is ~19K tokens against a 10K/min free-tier
+# ceiling, so every request 429s no matter how long the client waits.
+# _batch_token_budget() derives the real ceiling from configuration.
+DEFAULT_BATCH_SIZE = 96
+DEFAULT_BATCH_TOKEN_BUDGET = 100_000
 
-# Sized to divide the free-tier per-minute item quota exactly. At 64 the
-# second batch of every minute overruns 100 and stalls for the rest of the
-# window, yielding 64 items/min; at 50 two batches fit per window and the
-# run sustains the full 100.
-DEFAULT_BATCH_SIZE = 50
-DEFAULT_BATCH_TOKEN_BUDGET = 18_000
+# Leave headroom against the provider's own accounting: the estimate here
+# is approximate, and landing exactly on the limit trips it.
+TOKEN_BUDGET_SAFETY = 0.85
 
-# Task types for asymmetric retrieval.
-TASK_DOCUMENT = "RETRIEVAL_DOCUMENT"
-TASK_QUERY = "RETRIEVAL_QUERY"
+RATE_WINDOW_SECONDS = 60.0
 
-# Token estimation without pulling in a tokenizer. 3.5 chars/token is
-# deliberately pessimistic: English prose runs about 4, but French bylaw
-# text (Moncton, Fredericton) and citation-dense strings like "6.3(1)(a)"
-# tokenize harder. Over-estimating costs a slightly smaller batch;
-# under-estimating costs a rejected request.
+# Asymmetric retrieval modes.
+TASK_DOCUMENT = "document"
+TASK_QUERY = "query"
+
+# Token estimation without a tokenizer. 3.5 chars/token is deliberately
+# pessimistic: English prose runs about 4, but French bylaw text and
+# citation-dense strings like "6.3(1)(a)" tokenize harder.
 CHARS_PER_TOKEN_ESTIMATE = 3.5
 MAX_CHARS_PER_INPUT = int(MAX_TOKENS_PER_INPUT * CHARS_PER_TOKEN_ESTIMATE)
 
-# Retry policy for transient provider failures.
 MAX_ATTEMPTS = 5
 BACKOFF_BASE_SECONDS = 1.0
-BACKOFF_CAP_SECONDS = 65.0
+BACKOFF_CAP_SECONDS = 30.0
+REQUEST_TIMEOUT_SECONDS = 120.0
 
-# Free-tier quota exhaustion arrives as HTTP 429.
+# A 429 from a per-minute quota is not a transient error. It clears when
+# the window rolls over, so the wait that resolves it is the window, and
+# jittered exponential backoff capped below a minute simply burns the
+# attempt budget on sleeps too short to help: a run gave up 67 chunks
+# from the end after five such retries. These are counted separately
+# from transport failures, which is what MAX_ATTEMPTS is for.
+RATE_LIMIT_ATTEMPTS = 12
+RATE_LIMIT_WAIT_SECONDS = 61.0
+
 RATE_LIMIT_STATUS = 429
-
-# The free-tier embedding quota is counted PER TEXT, not per HTTP request:
-# a single call carrying 64 inputs spends 64 units of
-# `EmbedContentRequestsPerMinutePerUserPerProjectPerModel-FreeTier`
-# (observed limit 100/min). Batching therefore reduces round trips but buys
-# no quota headroom at all, so the pacing below is what actually keeps a
-# full-corpus ingestion inside the free tier.
-FREE_TIER_ITEMS_PER_MINUTE = 100
-RATE_WINDOW_SECONDS = 60.0
-
-# Leaves room for clock skew against the provider's own window.
-RATE_WINDOW_SAFETY_SECONDS = 1.0
-
-# Google returns the wait it wants in the error body, in either of these
-# shapes. Honouring it beats guessing: blind exponential backoff was
-# retrying after a few seconds against a window that needed thirty.
-_RETRY_DELAY_PATTERNS = (
-    re.compile(r"'retryDelay'\s*:\s*'(\d+(?:\.\d+)?)s'"),
-    re.compile(r"retry in (\d+(?:\.\d+)?)s"),
-)
-
-
-def retry_delay_from(exc: Exception) -> float | None:
-    """The provider's requested wait, if it stated one."""
-    text = str(exc)
-    for pattern in _RETRY_DELAY_PATTERNS:
-        found = pattern.search(text)
-        if found:
-            return float(found.group(1))
-    return None
 
 
 class _RateLimiter:
-    """Sliding-window limiter over items embedded per minute."""
+    """Sliding window over both requests and tokens per minute.
 
-    def __init__(self, limit: int = FREE_TIER_ITEMS_PER_MINUTE) -> None:
-        self.limit = limit
+    Voyage limits accounts without a payment method to 3 RPM and 10K TPM.
+    Both have to be respected: pacing on requests alone still trips the
+    token ceiling, and pacing on tokens alone still trips the request
+    ceiling on a run of small batches.
+    """
+
+    def __init__(self, requests_per_minute: int, tokens_per_minute: int) -> None:
+        self.requests_per_minute = requests_per_minute
+        self.tokens_per_minute = tokens_per_minute
         self._events: collections.deque[tuple[float, int]] = collections.deque()
 
-    def _spent(self, now: float) -> int:
+    def _prune(self, now: float) -> None:
         while self._events and now - self._events[0][0] >= RATE_WINDOW_SECONDS:
             self._events.popleft()
-        return sum(count for _, count in self._events)
 
-    def wait_time(self, items: int, now: float) -> float:
-        """Seconds to wait before `items` more may be sent."""
-        if self.limit <= 0:
+    def wait_time(self, tokens: int, now: float) -> float:
+        """Seconds to wait before a request of `tokens` may be sent."""
+        if self.requests_per_minute <= 0 and self.tokens_per_minute <= 0:
             return 0.0
-        spent = self._spent(now)
-        if spent + items <= self.limit:
-            return 0.0
-        # Wait for the oldest events to age out of the window.
-        needed = spent + items - self.limit
-        released = 0
-        for timestamp, count in self._events:
-            released += count
-            if released >= needed:
-                age = now - timestamp
-                return max(0.0, RATE_WINDOW_SECONDS - age) + RATE_WINDOW_SAFETY_SECONDS
-        return RATE_WINDOW_SECONDS + RATE_WINDOW_SAFETY_SECONDS
 
-    def record(self, items: int, now: float) -> None:
-        self._events.append((now, items))
+        self._prune(now)
+        requests = len(self._events)
+        spent = sum(count for _, count in self._events)
+
+        over_requests = (
+            self.requests_per_minute > 0 and requests + 1 > self.requests_per_minute
+        )
+        over_tokens = (
+            self.tokens_per_minute > 0 and spent + tokens > self.tokens_per_minute
+        )
+        if not (over_requests or over_tokens):
+            return 0.0
+
+        # Wait for the oldest event to age out of the window; the caller
+        # re-checks afterwards, so one step at a time is enough.
+        oldest = self._events[0][0] if self._events else now
+        return max(0.0, RATE_WINDOW_SECONDS - (now - oldest)) + 0.5
+
+    def record(self, tokens: int, now: float) -> None:
+        self._events.append((now, tokens))
 
 
 class EmbeddingError(RuntimeError):
@@ -185,24 +159,12 @@ class EmbeddingInputTooLarge(EmbeddingError):
 
 
 class EmbeddingQuotaExhausted(EmbeddingError):
-    """The DAILY free-tier quota is spent; nothing will succeed until reset.
+    """The account's token grant is spent.
 
-    Distinct from the per-minute limit, which pacing and a short wait
-    resolve. Retrying this one just burns the remaining attempts against a
-    counter that resets hours from now, so the run stops cleanly and says
-    what remains instead of failing with a stack trace. Ingestion is
-    resumable: the content hash is recorded only for documents that
-    finished, so the next run skips them and picks up where this left off.
+    Distinct from rate limiting, which a short wait resolves. The
+    ingestion CLI stops cleanly on this and reports what remains, rather
+    than burning retries against a balance that will not refill on its own.
     """
-
-
-# The 429 body names which quota was hit. Per-day is terminal for this run.
-_DAILY_QUOTA_MARKERS = ("PerDay", "RequestsPerDay")
-
-
-def is_daily_quota(exc: Exception) -> bool:
-    text = str(exc)
-    return any(marker in text for marker in _DAILY_QUOTA_MARKERS)
 
 
 def estimate_tokens(text: str) -> int:
@@ -210,54 +172,42 @@ def estimate_tokens(text: str) -> int:
     return int(len(text) / CHARS_PER_TOKEN_ESTIMATE) + 1
 
 
-def normalize(vector: list[float]) -> list[float]:
-    """Scale to unit length, leaving a zero vector alone."""
-    magnitude = math.sqrt(sum(value * value for value in vector))
-    if magnitude == 0:
-        return vector
-    return [value / magnitude for value in vector]
-
-
-def _is_retryable(exc: Exception) -> bool:
-    """Transient provider conditions worth another attempt.
-
-    A malformed request or a bad key fails identically five times, so only
-    server faults and rate limiting are retried. On the free tier a 429 is
-    an expected part of a large ingestion run, not an error.
-    """
-    if isinstance(exc, ServerError):
-        return True
-    if isinstance(exc, ClientError):
-        return getattr(exc, "code", None) == RATE_LIMIT_STATUS
-    if isinstance(exc, APIError):
-        code = getattr(exc, "code", None)
-        return code is not None and code >= 500
-    return False
+def _is_quota_exhausted(status: int, body: str) -> bool:
+    lowered = body.lower()
+    return status in (402, 403) or "quota" in lowered or "insufficient" in lowered
 
 
 class Embedder:
-    """Async wrapper over the Gemini embeddings endpoint."""
+    """Async wrapper over the Voyage embeddings endpoint."""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
 
-        if self._settings.gemini_api_key is None:
+        if self._settings.voyage_api_key is None:
             # config.py types this Optional because Phase 1 booted without
             # it. From Phase 2 on it is mandatory, so say so precisely
-            # rather than letting a None reach the SDK as an opaque 401.
+            # rather than letting a None reach the API as an opaque 401.
             raise EmbeddingConfigError(
-                "GEMINI_API_KEY is not set. It is required from Phase 2 "
-                "onward for embedding generation. A free key needs no "
-                "payment method: https://aistudio.google.com/apikey"
+                "VOYAGE_API_KEY is not set. It is required from Phase 2 "
+                "onward for embedding generation. A free key with a 200M "
+                "token grant is available at https://www.voyageai.com/"
             )
 
         self.model = self._settings.embedding_model
         self.dimensions = self._settings.embedding_dimensions
-
-        self._client = genai.Client(
-            api_key=self._settings.gemini_api_key.get_secret_value()
+        self._limiter = _RateLimiter(
+            self._settings.embedding_requests_per_minute,
+            self._settings.embedding_tokens_per_minute,
         )
-        self._limiter = _RateLimiter(self._settings.embedding_items_per_minute)
+        self._client = httpx.AsyncClient(
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            headers={
+                "Authorization": (
+                    f"Bearer {self._settings.voyage_api_key.get_secret_value()}"
+                ),
+                "Content-Type": "application/json",
+            },
+        )
 
     # -----------------------------------------------------------------
     #  Public API
@@ -266,18 +216,18 @@ class Embedder:
     async def embed_query(self, text: str) -> list[float]:
         """Embed a single user query.
 
-        Note the deliberate asymmetry with ingestion. The task type differs
-        (RETRIEVAL_QUERY, not RETRIEVAL_DOCUMENT), and the Section 4
-        `[Province: ...] [Municipality: ...]` prefix stored on chunks is
-        NOT added here: both RPCs already filter by `municipality_id`, so
-        prefixing the query would only spend similarity budget on
-        jurisdiction terms every candidate chunk in scope already shares.
+        Note the deliberate asymmetry with ingestion. The input type
+        differs, and the Section 4 `[Province: ...] [Municipality: ...]`
+        prefix stored on chunks is NOT added here: both RPCs already
+        filter by `municipality_id`, so prefixing the query would only
+        spend similarity budget on jurisdiction terms every candidate
+        chunk in scope already shares.
         """
         cleaned = text.strip()
         if not cleaned:
             raise EmbeddingError("Cannot embed empty query text.")
 
-        vectors = await self._embed([cleaned], task=TASK_QUERY)
+        vectors = await self._embed([cleaned], TASK_QUERY)
         return vectors[0]
 
     async def embed_documents(
@@ -290,14 +240,13 @@ class Embedder:
         """Embed many chunks, returning vectors in the same order as `texts`."""
         return await self._embed(
             texts,
-            task=TASK_DOCUMENT,
+            TASK_DOCUMENT,
             batch_size=batch_size,
             batch_token_budget=batch_token_budget,
         )
 
     async def aclose(self) -> None:
-        """Present for symmetry; the SDK manages its own transport."""
-        return None
+        await self._client.aclose()
 
     # -----------------------------------------------------------------
     #  Internals
@@ -306,8 +255,8 @@ class Embedder:
     async def _embed(
         self,
         texts: list[str],
+        input_type: str,
         *,
-        task: str,
         batch_size: int = DEFAULT_BATCH_SIZE,
         batch_token_budget: int = DEFAULT_BATCH_TOKEN_BUDGET,
     ) -> list[list[float]]:
@@ -315,33 +264,59 @@ class Embedder:
             return []
 
         self._validate_inputs(texts)
+        batches = self._make_batches(
+            texts, batch_size, self._batch_token_budget(batch_token_budget)
+        )
 
-        batches = self._make_batches(texts, batch_size, batch_token_budget)
         log.info(
             "embedding_started",
             model=self.model,
-            task=task,
+            input_type=input_type,
             inputs=len(texts),
             batches=len(batches),
         )
 
         vectors: list[list[float]] = []
+        total_tokens = 0
         for position, batch in enumerate(batches, start=1):
-            vectors.extend(await self._embed_batch(batch, task, position, len(batches)))
+            batch_vectors, used = await self._embed_batch(
+                batch, input_type, position, len(batches)
+            )
+            vectors.extend(batch_vectors)
+            total_tokens += used
 
         log.info(
             "embedding_complete",
             model=self.model,
-            task=task,
             inputs=len(texts),
+            tokens=total_tokens,
         )
         return vectors
+
+    def _batch_token_budget(self, requested: int) -> int:
+        """Cap a batch at what one request's share of the minute can pass.
+
+        The budget is the minute's tokens divided by the minute's
+        requests, not the whole minute's tokens. Sizing each request at
+        the full token allowance lets the client offer three times the
+        minute's budget in a minute - the limiter paces the requests, and
+        every one of them is then rejected on tokens. Moncton's French
+        corpus failed that way twice, once through five retries and once
+        through twelve minutes of waiting: no wait clears a request that
+        does not fit.
+        """
+        ceiling = self._settings.embedding_tokens_per_minute
+        if ceiling <= 0:
+            return requested
+
+        per_request = ceiling / max(1, self._settings.embedding_requests_per_minute)
+        return max(1, min(requested, int(per_request * TOKEN_BUDGET_SAFETY)))
 
     def _validate_inputs(self, texts: list[str]) -> None:
         for index, text in enumerate(texts):
             if not text or not text.strip():
-                # The API rejects empty strings, but a blank chunk is a
-                # parser bug worth surfacing at its source index.
+                # A blank chunk is a parser bug worth surfacing at its
+                # source index rather than embedding as an empty vector.
                 raise EmbeddingError(
                     f"Input at index {index} is empty; a chunk reached the "
                     "embedder with no text. Check clause extraction."
@@ -363,7 +338,7 @@ class Embedder:
         batch_token_budget: int,
     ) -> list[list[str]]:
         """Group inputs under both the per-request count and token ceilings."""
-        size = max(1, min(batch_size, MAX_INPUTS_PER_REQUEST))
+        size = max(1, batch_size)
 
         batches: list[list[str]] = []
         current: list[str] = []
@@ -385,117 +360,150 @@ class Embedder:
     async def _embed_batch(
         self,
         batch: list[str],
-        task: str,
+        input_type: str,
         position: int,
         total: int,
-    ) -> list[list[float]]:
-        last_error: Exception | None = None
+    ) -> tuple[list[list[float]], int]:
+        tokens = sum(estimate_tokens(text) for text in batch)
+        payload = {
+            "input": batch,
+            "model": self.model,
+            "input_type": input_type,
+            # Sent explicitly rather than relying on the model default, so
+            # a future default change cannot quietly produce vectors that
+            # no longer fit VECTOR(1024).
+            "output_dimension": self.dimensions,
+        }
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            # Pace against the per-item quota before spending any of it.
-            pause = self._limiter.wait_time(len(batch), time.monotonic())
+        last_error: str | None = None
+        attempt = 0
+        throttled = 0
+
+        while attempt < MAX_ATTEMPTS:
+            attempt += 1
+            # Pace before spending the allowance, not after failing on it.
+            pause = self._limiter.wait_time(tokens, time.monotonic())
             if pause > 0:
                 log.info(
                     "embedding_paced",
                     batch=f"{position}/{total}",
                     sleep_seconds=round(pause, 1),
-                    reason="free-tier per-minute item quota",
+                    reason="provider per-minute limit",
                 )
                 await asyncio.sleep(pause)
 
-            self._limiter.record(len(batch), time.monotonic())
+            self._limiter.record(tokens, time.monotonic())
             try:
-                response = await self._client.aio.models.embed_content(
-                    model=self.model,
-                    contents=list(batch),
-                    config=types.EmbedContentConfig(
-                        task_type=task,
-                        # Sent explicitly rather than relying on the model
-                        # default (3072), which would not fit VECTOR(1536).
-                        output_dimensionality=self.dimensions,
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001 - classified below
-                last_error = exc
-
-                if is_daily_quota(exc):
-                    raise EmbeddingQuotaExhausted(
-                        "Daily free-tier embedding quota exhausted "
-                        f"(batch {position}/{total}). The counter resets on "
-                        "Google's schedule; re-run ingestion then. Documents "
-                        "already committed are recorded and will be skipped."
-                    ) from exc
-
-                if not _is_retryable(exc) or attempt == MAX_ATTEMPTS:
+                response = await self._client.post(API_URL, json=payload)
+            except httpx.HTTPError as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if attempt == MAX_ATTEMPTS:
                     break
-
-                # Prefer the wait the provider actually asked for. Its
-                # 429 states a retryDelay (observed: 31s); exponential
-                # backoff alone retried far sooner and simply burned the
-                # remaining attempts against a window that had not reset.
-                stated = retry_delay_from(exc)
-                if stated is not None:
-                    delay = stated + random.uniform(0, 1.0)
-                else:
-                    # Full jitter, so a large run does not retry every
-                    # batch in lockstep and trip the limit again.
-                    ceiling = min(
-                        BACKOFF_CAP_SECONDS,
-                        BACKOFF_BASE_SECONDS * 2 ** (attempt - 1),
-                    )
-                    delay = random.uniform(0, ceiling)
-                log.warning(
-                    "embedding_retry",
-                    batch=f"{position}/{total}",
-                    attempt=attempt,
-                    error=type(exc).__name__,
-                    sleep_seconds=round(delay, 2),
-                )
-                await asyncio.sleep(delay)
+                await self._backoff(attempt, position, total, last_error)
                 continue
 
-            embeddings = list(response.embeddings or [])
+            if response.status_code == 200:
+                return self._parse(response.json(), batch, position)
 
-            # Gemini returns no per-item index, so results are positional
-            # and there is nothing to re-sort by. A count mismatch is the
-            # only signal that the response does not correspond to the
-            # request - notably if a model that aggregates a list into one
-            # vector were ever configured here.
-            if len(embeddings) != len(batch):
-                raise EmbeddingError(
-                    f"Provider returned {len(embeddings)} embeddings for "
-                    f"{len(batch)} inputs; refusing to align them by "
-                    "position. Check that the configured model returns one "
-                    "embedding per input rather than an aggregate."
+            body = response.text[:400]
+
+            # A spent grant will not refill on its own; retrying only
+            # delays telling the operator what actually happened.
+            if _is_quota_exhausted(response.status_code, body):
+                raise EmbeddingQuotaExhausted(
+                    f"Voyage rejected the request as out of quota "
+                    f"(HTTP {response.status_code}): {body}"
                 )
 
-            vectors: list[list[float]] = []
-            for offset, embedding in enumerate(embeddings):
-                values = list(embedding.values or [])
-                if len(values) != self.dimensions:
-                    raise EmbeddingError(
-                        f"Embedding {offset} in batch {position} has "
-                        f"{len(values)} dimensions, expected "
-                        f"{self.dimensions}. It would be rejected by "
-                        "bylaw_chunks.embedding VECTOR(1536)."
-                    )
-                vectors.append(normalize(values))
+            last_error = f"HTTP {response.status_code}: {body}"
 
-            log.debug(
-                "embedding_batch_complete",
-                batch=f"{position}/{total}",
-                inputs=len(batch),
-            )
-            return vectors
+            if response.status_code == RATE_LIMIT_STATUS:
+                if throttled >= RATE_LIMIT_ATTEMPTS:
+                    break
+                throttled += 1
+                # Does not consume an attempt: nothing is wrong with the
+                # request, and the account's own limit is what is being
+                # waited out.
+                attempt -= 1
+                await self._wait_out_rate_limit(
+                    throttled, position, total, last_error
+                )
+                continue
+
+            if response.status_code < 500 or attempt == MAX_ATTEMPTS:
+                break
+            await self._backoff(attempt, position, total, last_error)
 
         raise EmbeddingError(
             f"Embedding batch {position}/{total} failed after "
-            f"{MAX_ATTEMPTS} attempts: "
-            f"{type(last_error).__name__}: {last_error}"
-        ) from last_error
+            f"{attempt} attempt(s) and {throttled} rate-limit wait(s): "
+            f"{last_error}"
+        )
+
+    async def _wait_out_rate_limit(
+        self, throttled: int, position: int, total: int, error: str
+    ) -> None:
+        """Sleep past the provider's per-minute window.
+
+        Jittered so a run that trips the limit on several batches does not
+        retry them all in lockstep and trip it again.
+        """
+        delay = RATE_LIMIT_WAIT_SECONDS + random.uniform(0, 5)
+        log.warning(
+            "embedding_rate_limited",
+            batch=f"{position}/{total}",
+            wait=throttled,
+            of=RATE_LIMIT_ATTEMPTS,
+            error=error[:120],
+            sleep_seconds=round(delay, 1),
+        )
+        await asyncio.sleep(delay)
+
+    async def _backoff(
+        self, attempt: int, position: int, total: int, error: str
+    ) -> None:
+        # Full jitter, so a large ingestion run that trips a rate limit
+        # does not retry every batch in lockstep and trip it again.
+        ceiling = min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+        delay = random.uniform(0, ceiling)
+        log.warning(
+            "embedding_retry",
+            batch=f"{position}/{total}",
+            attempt=attempt,
+            error=error[:120],
+            sleep_seconds=round(delay, 2),
+        )
+        await asyncio.sleep(delay)
+
+    def _parse(
+        self, body: dict, batch: list[str], position: int
+    ) -> tuple[list[list[float]], int]:
+        # Sorted by the index the API assigns; see the module docstring.
+        items = sorted(body.get("data") or [], key=lambda item: item["index"])
+
+        if len(items) != len(batch):
+            raise EmbeddingError(
+                f"Provider returned {len(items)} embeddings for "
+                f"{len(batch)} inputs; refusing to align them by position."
+            )
+
+        vectors: list[list[float]] = []
+        for offset, item in enumerate(items):
+            vector = item.get("embedding") or []
+            if len(vector) != self.dimensions:
+                raise EmbeddingError(
+                    f"Embedding {offset} in batch {position} has "
+                    f"{len(vector)} dimensions, expected {self.dimensions}. "
+                    f"It would be rejected by bylaw_chunks.embedding "
+                    f"VECTOR({self.dimensions})."
+                )
+            vectors.append([float(value) for value in vector])
+
+        used = int((body.get("usage") or {}).get("total_tokens") or 0)
+        return vectors, used
 
 
 @lru_cache
 def get_embedder() -> Embedder:
-    """Cached accessor so one client is shared."""
+    """Cached accessor so one client (and connection pool) is shared."""
     return Embedder()

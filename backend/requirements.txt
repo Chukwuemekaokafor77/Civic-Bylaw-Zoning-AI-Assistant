@@ -11,7 +11,8 @@ python-dotenv==1.0.1
 
 # ---- Retrieval & generation (Phase 3) ----
 supabase==2.11.0
-google-genai==2.22.0
+# Embeddings are called over HTTP with httpx (already required above),
+# so the provider needs no SDK of its own.
 groq==0.15.0
 sse-starlette==2.2.1
 

@@ -26,6 +26,20 @@ observed while verifying the registry (see the `notes` and
   a new version is published. Retrying is useless; a human has to
   re-discover the link. `SourceGone` says exactly that.
 
+* An incomplete TLS chain is completed, never bypassed. Moncton's server
+  sends only its leaf certificate and omits the intermediate, so OpenSSL
+  cannot build a path to a trusted root and the fetch fails. Browsers
+  handle this by fetching the issuer named in the certificate's Authority
+  Information Access extension; `_complete_chain` does the same.
+
+  This does not weaken verification, and the distinction matters for a
+  tool that cites what it downloads as law. Supplying an intermediate
+  cannot make an untrusted certificate trusted: every certificate in the
+  completed path is still signature-checked by OpenSSL and still has to
+  terminate at a root already in the trust store. `verify=False` would
+  have been one parameter and is refused - it would accept any
+  certificate at all, including an attacker's.
+
 On `bylaw_last_verified_at`: this module deliberately does NOT set it. A
 successful fetch proves a file was downloadable, not that it is the
 in-force consolidation - the registry makes that distinction explicitly,
@@ -37,12 +51,18 @@ was verified. Machine fetches update `last_fetched_at`; only
 from __future__ import annotations
 
 import hashlib
+import ssl
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
+from pathlib import Path
 
+import certifi
 import httpx
 import structlog
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 from supabase import AsyncClient, create_async_client
 
 from app.config import Settings, get_settings
@@ -59,6 +79,14 @@ PDF_MAGIC = b"%PDF"
 SNIFF_BYTES = 1024
 
 FETCH_TIMEOUT_SECONDS = 120.0
+
+# Certificates to follow when completing a chain. Real chains are two or
+# three deep; anything longer is a loop or a misconfiguration worth
+# failing on rather than chasing.
+MAX_CHAIN_DEPTH = 4
+
+# Completed bundles, keyed by host, built once per process.
+_TRUST_BUNDLES: dict[str, str] = {}
 
 # Municipal CDNs are slow and these files reach 15 MB; read in blocks
 # rather than holding two copies of the document in memory.
@@ -86,6 +114,127 @@ class SourceGone(SourceError):
 
 class NotADocument(SourceError):
     """The response was not the document it claimed to be."""
+
+
+class UntrustedSource(SourceError):
+    """The certificate could not be verified even after completing the chain.
+
+    Raised rather than falling back to an unverified fetch: bylaw text is
+    quoted to residents as law, so it has to arrive over a connection whose
+    authenticity was established.
+    """
+
+
+def _leaf_certificate(host: str, port: int = 443) -> x509.Certificate:
+    """The certificate the server presents, read without validating it.
+
+    Validation is exactly what is failing; the certificate is fetched here
+    only to read its Authority Information Access extension.
+    """
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    with socket_connection(host, port) as sock:
+        with context.wrap_socket(sock, server_hostname=host) as tls:
+            der = tls.getpeercert(binary_form=True)
+    return x509.load_der_x509_certificate(der)
+
+
+def socket_connection(host: str, port: int):
+    import socket
+
+    return socket.create_connection((host, port), timeout=30)
+
+
+def _issuer_url(cert: x509.Certificate) -> str | None:
+    """The caIssuers URL from the certificate's AIA extension, if present."""
+    try:
+        aia = cert.extensions.get_extension_for_class(
+            x509.AuthorityInformationAccess
+        ).value
+    except x509.ExtensionNotFound:
+        return None
+
+    for description in aia:
+        if description.access_method == x509.oid.AuthorityInformationAccessOID.CA_ISSUERS:
+            return str(description.access_location.value)
+    return None
+
+
+def _load_certificate(raw: bytes) -> x509.Certificate:
+    try:
+        return x509.load_der_x509_certificate(raw)
+    except ValueError:
+        return x509.load_pem_x509_certificate(raw)
+
+
+def _complete_chain(host: str) -> str | None:
+    """Build a CA bundle containing the intermediates the server omitted.
+
+    Returns a path to certifi's roots plus any fetched intermediates, or
+    None when the chain cannot be completed. The result is only ever used
+    as a trust store for a fully-verified connection.
+    """
+    if host in _TRUST_BUNDLES:
+        return _TRUST_BUNDLES[host]
+
+    try:
+        cert = _leaf_certificate(host)
+    except Exception as exc:  # noqa: BLE001 - diagnostic only
+        log.warning("chain_completion_failed", host=host, stage="leaf", error=str(exc))
+        return None
+
+    intermediates: list[x509.Certificate] = []
+    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        for _ in range(MAX_CHAIN_DEPTH):
+            if cert.issuer == cert.subject:
+                break  # self-signed root; nothing above it to fetch
+            url = _issuer_url(cert)
+            if not url:
+                break
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+                issuer = _load_certificate(response.content)
+            except Exception as exc:  # noqa: BLE001 - diagnostic only
+                # Expected at the top of the chain: the last AIA link often
+                # points at a root served in a form we do not need. Only
+                # the absence of ANY intermediate is a real failure, and
+                # that is reported by the caller.
+                log.debug(
+                    "chain_walk_stopped", host=host, stage="issuer", error=str(exc)
+                )
+                break
+
+            # Only accept a certificate that actually issued the previous
+            # one. OpenSSL re-checks every signature anyway, so this is a
+            # cheap sanity check rather than the security boundary.
+            if issuer.subject != cert.issuer:
+                break
+
+            intermediates.append(issuer)
+            cert = issuer
+
+    if not intermediates:
+        return None
+
+    handle = tempfile.NamedTemporaryFile(
+        "wb", suffix=".pem", prefix=f"chain-{host}-", delete=False
+    )
+    handle.write(Path(certifi.where()).read_bytes())
+    for issuer in intermediates:
+        handle.write(b"\n" + issuer.public_bytes(Encoding.PEM))
+    handle.close()
+
+    log.info(
+        "chain_completed",
+        host=host,
+        intermediates=len(intermediates),
+        subjects=[c.subject.rfc4514_string()[:60] for c in intermediates],
+    )
+    _TRUST_BUNDLES[host] = handle.name
+    return handle.name
 
 
 @dataclass
@@ -125,6 +274,11 @@ class ChangeDecision:
 # ---------------------------------------------------------------------
 
 
+def _is_certificate_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "certificate" in text or "ssl" in text
+
+
 async def fetch_source(
     url: str,
     *,
@@ -133,74 +287,103 @@ async def fetch_source(
 ) -> FetchResult:
     """Download a bylaw source and hash it.
 
-    Raises `SourceGone` when the URL has been retired, and `NotADocument`
-    when the response is not the file type the registry declared.
+    Raises `SourceGone` when the URL has been retired, `NotADocument` when
+    the response is not the file type the registry declared, and
+    `UntrustedSource` when the certificate cannot be verified even after
+    the chain is completed.
     """
-    owns_client = client is None
-    client = client or httpx.AsyncClient(
+    if client is not None:
+        return await _fetch_with(client, url, expect)
+
+    try:
+        async with _default_client() as owned:
+            return await _fetch_with(owned, url, expect)
+    except httpx.ConnectError as exc:
+        if not _is_certificate_error(exc):
+            raise
+
+        # The server likely omitted an intermediate. Fetch it and retry
+        # with a completed trust store - still fully verified.
+        host = httpx.URL(url).host
+        log.warning("incomplete_certificate_chain", host=host, error=str(exc)[:160])
+        bundle = _complete_chain(host)
+        if bundle is None:
+            raise UntrustedSource(
+                f"{host} presented a certificate that could not be verified, "
+                "and its chain could not be completed from the issuer named "
+                "in the certificate. Refusing to fetch bylaw text over an "
+                "unauthenticated connection."
+            ) from exc
+
+        async with _default_client(verify=bundle) as retried:
+            return await _fetch_with(retried, url, expect)
+
+
+def _default_client(verify: str | bool = True) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
         timeout=FETCH_TIMEOUT_SECONDS,
         follow_redirects=True,
         headers={"User-Agent": "CivicBylawAssistant/1.0 (+ingestion)"},
+        verify=verify,
     )
 
-    try:
-        digest = hashlib.sha256()
-        body = bytearray()
 
-        async with client.stream("GET", url) as response:
-            if response.status_code in (404, 410):
-                raise SourceGone(
-                    f"{url} returned {response.status_code}. For sources whose "
-                    "URL encodes a consolidation date (CBRM) or a document id "
-                    "(Saint John), this means a new consolidation was published "
-                    "and the registry entry must be re-discovered by hand - "
-                    "retrying will not resolve it."
-                )
-            response.raise_for_status()
+async def _fetch_with(
+    client: httpx.AsyncClient, url: str, expect: str
+) -> FetchResult:
+    digest = hashlib.sha256()
+    body = bytearray()
 
-            async for block in response.aiter_bytes(STREAM_CHUNK_BYTES):
-                digest.update(block)
-                body.extend(block)
-
-            resolved_url = str(response.url)
-            content_type = response.headers.get("content-type")
-
-        content = bytes(body)
-        if expect == "pdf" and not content.startswith(PDF_MAGIC):
-            head = content[:SNIFF_BYTES].decode("utf-8", errors="replace")
-            looks_like_login = "login" in head.lower() or "sign in" in head.lower()
-            raise NotADocument(
-                f"{url} returned {len(content)} bytes that are not a PDF "
-                f"(content-type: {content_type}). "
-                + (
-                    "The body looks like a sign-in page - a 200 status is not "
-                    "proof the document was served."
-                    if looks_like_login
-                    else "Refusing to ingest it as bylaw text."
-                )
+    async with client.stream("GET", url) as response:
+        if response.status_code in (404, 410):
+            raise SourceGone(
+                f"{url} returned {response.status_code}. For sources whose "
+                "URL encodes a consolidation date (CBRM) or a document id "
+                "(Saint John), this means a new consolidation was published "
+                "and the registry entry must be re-discovered by hand - "
+                "retrying will not resolve it."
             )
+        response.raise_for_status()
 
-        result = FetchResult(
-            citation_url=url,
-            resolved_url=resolved_url,
-            content=content,
-            content_hash=digest.hexdigest(),
-            content_type=content_type,
-            fetched_at=datetime.now(timezone.utc),
+        async for block in response.aiter_bytes(STREAM_CHUNK_BYTES):
+            digest.update(block)
+            body.extend(block)
+
+        resolved_url = str(response.url)
+        content_type = response.headers.get("content-type")
+
+    content = bytes(body)
+    if expect == "pdf" and not content.startswith(PDF_MAGIC):
+        head = content[:SNIFF_BYTES].decode("utf-8", errors="replace")
+        looks_like_login = "login" in head.lower() or "sign in" in head.lower()
+        raise NotADocument(
+            f"{url} returned {len(content)} bytes that are not a PDF "
+            f"(content-type: {content_type}). "
+            + (
+                "The body looks like a sign-in page - a 200 status is not "
+                "proof the document was served."
+                if looks_like_login
+                else "Refusing to ingest it as bylaw text."
+            )
         )
 
-        log.info(
-            "source_fetched",
-            url=url,
-            resolved_url=resolved_url if result.redirected else None,
-            bytes=result.size_bytes,
-            content_hash=result.content_hash[:12],
-        )
-        return result
+    result = FetchResult(
+        citation_url=url,
+        resolved_url=resolved_url,
+        content=content,
+        content_hash=digest.hexdigest(),
+        content_type=content_type,
+        fetched_at=datetime.now(timezone.utc),
+    )
 
-    finally:
-        if owns_client:
-            await client.aclose()
+    log.info(
+        "source_fetched",
+        url=url,
+        resolved_url=resolved_url if result.redirected else None,
+        bytes=result.size_bytes,
+        content_hash=result.content_hash[:12],
+    )
+    return result
 
 
 # ---------------------------------------------------------------------

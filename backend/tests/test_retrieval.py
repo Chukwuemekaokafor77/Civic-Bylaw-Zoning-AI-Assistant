@@ -50,7 +50,7 @@ class StubEmbedder:
         self.calls += 1
         if self.error:
             raise self.error
-        return [0.1] * 1536
+        return [0.1] * 1024
 
 
 class StubStore:

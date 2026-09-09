@@ -1,0 +1,69 @@
+{
+  "municipality_id": "nb_saintjohn",
+  "language": "en",
+  "bylaw_name": "Zoning By-law (ZoneSJ) — 2026 Office Consolidation",
+  "notes": [
+    "Saint John heads a section two ways - '4.2(5) PARKING LOT STANDARDS' and '5.2 Fences' - and only the first was once recognised. Everything under a title-case heading merged upward, so a single clause ran from parking standards to signs thirty pages later. expect_sections here is mostly title-case headings for that reason: they fail if that regresses.",
+    "This consolidation carries the 2025 merger of the R1, R2 and RSS zones into Low-Rise Residential (RL), which is the amendment the registry flags as the highest staleness consequence in the set. The rl-zone-exists question fails if the source is ever replaced with a pre-2025 copy.",
+    "Definitions are unnumbered and alphabetical, so they are cited under section 3.1 with the defined term as the heading rather than by position."
+  ],
+  "questions": [
+    {
+      "id": "secondary-suite-definition",
+      "question": "What is a secondary suite?",
+      "expect_sections": [
+        "3.1"
+      ],
+      "expect_text": [
+        "additional small dwelling unit"
+      ],
+      "why": "Definitions chapter. 370 definitions were once cited as section 0(N), which this bylaw has no such thing as."
+    },
+    {
+      "id": "rl-zone-exists",
+      "question": "What is the zone symbol for the Low-Rise Residential zone?",
+      "expect_sections": [
+        "2.2"
+      ],
+      "expect_text": [
+        "Low-Rise Residential",
+        "RL"
+      ],
+      "why": "Pins document currency: a pre-2025 consolidation answers this with the R1 and R2 zones that C.P. 111-183 replaced. Phrased at the zone-symbol table rather than as 'what residential zones are there', which the residential zone chapters answer just as defensibly and which therefore measured ranking rather than currency."
+    },
+    {
+      "id": "fence-height",
+      "question": "How tall can I build a fence in my back yard?",
+      "expect_sections": [
+        "5.2"
+      ],
+      "expect_text": [
+        "two metres"
+      ],
+      "why": "A title-case heading. Until both heading forms were recognised, this section had no clause of its own and its text sat inside a parking provision."
+    },
+    {
+      "id": "bicycle-parking-threshold",
+      "question": "When do I have to provide bicycle parking?",
+      "expect_sections": [
+        "4.5"
+      ],
+      "expect_text": [
+        "12 or more new",
+        "5,000 square metres"
+      ],
+      "why": "Another title-case heading, and the thresholds are the kind of number an answer must not invent."
+    },
+    {
+      "id": "parking-lot-surfacing",
+      "question": "Does a parking lot have to be paved?",
+      "expect_sections": [
+        "4.2(5)"
+      ],
+      "expect_text": [
+        "paved surface"
+      ],
+      "why": "The clause that was 42,672 characters long. It must now hold parking lot standards and nothing else."
+    }
+  ]
+}

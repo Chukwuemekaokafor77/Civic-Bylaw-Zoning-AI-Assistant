@@ -1,0 +1,46 @@
+{
+  "municipality_id": "nl_stjohns",
+  "language": "en",
+  "bylaw_name": "St. John's Development Regulations",
+  "notes": [
+    "This document changes shape halfway through. Its general provisions are numbered 1.1 and 3.2.1; the 43 zone chapters that follow are headed by the zone itself and number their provisions (1), (2), (3). Only the first form was once recognised, and only its two-part variant, so the entire second half - every lot area and setback in the bylaw - sat inside one clause titled CONFLICTING PROVISIONS at 98,111 characters.",
+    "Most questions here therefore ask for a zone standard, which is exactly the text that was unreachable. They cite as MHP(1) and R1(3): '(1) PERMITTED USES' appears under all 43 zones, so the zone code is carried into the citation or one number names 43 different provisions.",
+    "Definitions were inheriting section 1.5, because the heading that introduces them reads 'SECTION 2- DEFINITIONS' and nothing matched it."
+  ],
+  "questions": [
+    {
+      "id": "r1-lot-area",
+      "question": "What is the minimum lot area for a single detached dwelling in the R1 zone?",
+      "expect_sections": ["R1(3)"],
+      "expect_text": ["450 metres square"],
+      "why": "A zone standard, which is the text that was unreachable. The number must come from the R1 chapter and no other."
+    },
+    {
+      "id": "r1-frontage",
+      "question": "How much frontage does a single detached lot need in R1?",
+      "expect_sections": ["R1(3)"],
+      "expect_text": ["15 metres"],
+      "why": "Pairs with the lot area: both values sit in one table, and a shift would take them from a neighbouring zone."
+    },
+    {
+      "id": "mini-home-park-uses",
+      "question": "What can I build in a mini home park zone?",
+      "expect_sections": ["MHP(1)"],
+      "expect_text": ["Mini Home Park"],
+      "why": "The permitted-use list of a zone chapter, cited with its zone code."
+    },
+    {
+      "id": "backyard-suite-definition",
+      "question": "What is a backyard suite?",
+      "expect_sections": ["2"],
+      "expect_text": ["detached self-contained"],
+      "why": "Definitions cite section 2, where the bylaw puts them, not the 1.5 they were inheriting."
+    },
+    {
+      "id": "accessory-dwelling-vocabulary",
+      "question": "Can I put a granny flat on my property for a caretaker?",
+      "expect_sections": ["2"],
+      "why": "The regulations never say 'granny flat'. Only semantic retrieval bridges this."
+    }
+  ]
+}

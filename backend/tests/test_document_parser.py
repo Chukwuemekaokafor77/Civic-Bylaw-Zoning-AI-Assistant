@@ -9,10 +9,14 @@ document rather than an imagined layout.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from app.services.document_parser import (
     NumberingScheme,
+    assemble_clauses,
+    SCHEMES,
     ParsedPage,
     PageLine,
     _clean_text,
@@ -20,7 +24,13 @@ from app.services.document_parser import (
     _find_matrix,
     _group_lines,
     _linearise_columns,
+    _line_is_bilingual_prose,
+    _looks_like_contents,
+    _looks_like_divider,
+    _looks_like_term_index,
+    _legend_meaning,
     _looks_like_toc,
+    _table_identity,
     _render_matrix,
     _strip_amendments,
     source_hash,
@@ -32,13 +42,28 @@ BOLD = "LGGUDB+Arial-BoldMT"
 BODY = "SBVKXN+ArialMT"
 
 
-def word(text: str, x0: float, top: float, *, font: str = BODY, width: float = 6.0) -> dict:
-    """One extract_words() record."""
+def word(
+    text: str,
+    x0: float,
+    top: float,
+    *,
+    font: str = BODY,
+    width: float = 6.0,
+    height: float = 11.0,
+) -> dict:
+    """One extract_words() record.
+
+    `top`/`bottom` matter: superscripts are detected from the word box,
+    not from a `size` attribute. Requesting `size` from pdfplumber splits
+    words wherever the size changes mid-word, which corrupted the zone
+    codes in the sign matrix.
+    """
     return {
         "text": text,
         "x0": x0,
         "x1": x0 + width * len(text),
         "top": top,
+        "bottom": top + height,
         "fontname": font,
     }
 
@@ -346,6 +371,18 @@ def make_page(lines: list[str]) -> ParsedPage:
     )
 
 
+def make_page_with_bold(lines: list[tuple[str, bool]]) -> ParsedPage:
+    """A page whose lines carry their own bold flag."""
+    return ParsedPage(
+        page_number=1,
+        lines=[PageLine(text, bold) for text, bold in lines],
+        page_label=None,
+        part_number=None,
+        part_title=None,
+        amendments=[],
+    )
+
+
 def test_contents_page_is_recognised_by_its_page_references():
     page = make_page(
         [
@@ -378,22 +415,34 @@ def test_superscript_is_reattached_to_its_unit():
     """"345 m 2" is neither the unit a resident reads nor a searchable term."""
     words = [
         word("345", 388, 501),
-        {**word("m", 410, 501), "size": 11.0},
-        {**word("2", 419, 500), "size": 6.41},
+        word("m", 410, 501),
+        # Measured from Z-5 p135: shorter and sitting on a raised baseline.
+        word("2", 419, 500.6, height=6.41),
     ]
     assert _group_lines(words)[0].text == "345 m²"
 
 
 def test_same_size_digit_is_not_treated_as_a_superscript():
-    words = [
-        {**word("30", 144, 653), "size": 11.0},
-        {**word("2", 170, 653), "size": 11.0},
-    ]
+    words = [word("30", 144, 653), word("2", 170, 653)]
     assert _group_lines(words)[0].text == "30 2"
 
 
-def test_superscript_detection_tolerates_missing_font_size():
-    assert _group_lines([word("345", 388, 501), word("2", 410, 501)])[0].text == "345 2"
+def test_a_small_digit_on_the_same_baseline_is_not_a_superscript():
+    """Height alone would misread "case 2"; the raised baseline is required."""
+    words = [
+        word("case", 144, 653),
+        # Shorter box, but bottom-aligned with its neighbour.
+        {**word("2", 180, 657, height=7.0), "bottom": 664.0},
+    ]
+    assert _group_lines(words)[0].text == "case 2"
+
+
+def test_superscript_detection_tolerates_a_missing_box():
+    plain = [
+        {"text": "345", "x0": 388, "x1": 400, "top": 501, "fontname": BODY},
+        {"text": "2", "x0": 410, "x1": 416, "top": 501, "fontname": BODY},
+    ]
+    assert _group_lines(plain)[0].text == "345 2"
 
 
 def test_clean_text_closes_the_gap_before_stray_punctuation():
@@ -419,3 +468,530 @@ def test_source_hash_is_stable_and_content_sensitive(tmp_path):
 
     b.write_bytes(b"bylaw content amended")
     assert source_hash(a) != source_hash(b)
+
+
+# ---------------------------------------------------------------------
+#  Bilingual documents (Moncton)
+# ---------------------------------------------------------------------
+
+MONCTON = SCHEMES["moncton"]
+
+
+@pytest.mark.parametrize(
+    "line, term",
+    [
+        (
+            "“ bicycle parking space ” means a slot in a rack",
+            "bicycle parking space",
+        ),
+        ("“cemetery” means land used for internment", "cemetery"),
+        # A qualifier may sit between the term and the verb.
+        ("“ city ”, when used alone, means the geographic area", "city"),
+    ],
+)
+def test_quoted_definition_needs_no_bold(line, term):
+    """Moncton does not set its defined terms in bold; the quotes mark them."""
+    found = MONCTON.definition_quoted.match(line)
+    assert found is not None
+    assert found.group(1).strip() == term
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A continuation line, not a definition: read as one, it opens a
+        # clause that swallows the rest of the chapter.
+        "which an adult sized bicycle may be secured by means of",
+        "copy used for the advertisement of goods or services.",
+        # A quoted sentence is not a defined term.
+        "“No parking.” The sign means the driver may not stop",
+    ],
+)
+def test_prose_is_not_read_as_a_quoted_definition(line):
+    assert MONCTON.definition_quoted.match(line) is None
+
+
+def test_french_definition_has_no_defining_verb():
+    """The guillemets are the whole marker: no "means" to anchor on."""
+    found = MONCTON.definition_guillemet.match(
+        "« arbre de rue » Arbre à planter entre la limite du lot"
+    )
+    assert found is not None
+    assert found.group(1).strip() == "arbre de rue"
+
+
+def test_french_cross_reference_is_not_a_definition():
+    """A lowercase continuation marks a reference, not a defined term."""
+    assert (
+        MONCTON.definition_guillemet.match(
+            "« arbre de rue » de l’arrêté ne s’applique pas"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "line, number",
+    [
+        ("111 (1) Minimum yard requirements do not apply", "111(1)"),
+        # A section whose whole content is one paragraph carries no
+        # subsection number.
+        ("142 In accordance with section 7, Table 12.2 identifies", "142"),
+        # pdfplumber splits "82.1" where the glyph spacing changes.
+        ("82. 1 (1) Despite Table 14.1, no lot containing", "82.1(1)"),
+    ],
+)
+def test_moncton_section_numbers_survive_the_layout(line, number):
+    found = MONCTON.clause.match(line)
+    assert found is not None
+    assert re.sub(r"\s+", "", found.group(1)) == number
+
+
+def test_two_columns_of_prose_are_split_by_language():
+    words = line_of("No development shall be", 60, 100)
+    words += line_of("Les aménagements ne sont", 330, 100)
+    assert _line_is_bilingual_prose(words, 316.0) is True
+
+
+def test_table_row_is_never_split_by_language():
+    """Severing a row would strand a setback from the zone it governs."""
+    words = [
+        word("R-1A", 60, 100),
+        word("558", 200, 100),
+        word("460", 340, 100),
+        word("460", 460, 100),
+    ]
+    assert _line_is_bilingual_prose(words, 316.0) is False
+
+
+def test_indented_section_number_is_not_a_column_boundary():
+    """Both languages indent the number, leaving a wide gap after it.
+
+    Counting that gap as a column boundary makes the line look like a
+    table row, and the two languages stay interleaved in the text.
+    """
+    words = line_of("158", 60, 100) + line_of("No development permitted", 100, 100)
+    words += line_of("158", 330, 100) + line_of("Les aménagements permis", 370, 100)
+    assert _line_is_bilingual_prose(words, 316.0) is True
+
+
+def test_contents_page_without_page_numbers_is_recognised():
+    """Moncton's contents carry no page references for _looks_like_toc."""
+    page = make_page(
+        [
+            "PART 16 - DOWNTOWN ZONES",
+            "153 Table 16.1 Downtown zones use table",
+            "154 Table 16.2 Downtown zones secondary use table",
+            "155 Table 16.3 Downtown zones lot requirements table",
+            "PART 17 - RURAL AND MANUFACTURED DWELLING ZONES",
+            "156 Table 17.1 Rural and manufactured dwelling zones use table",
+            "PART 18 - TOURISM ZONE",
+            "159 Table 18.1 Tourism zone use table",
+            "160 Table 18.2 Tourism zone secondary use table",
+            "161 Table 18.3 Tourism zone lot requirements table",
+            "162 Integrated Development",
+            "163 Conditional agreements carried over",
+            "164 Previous approvals",
+        ]
+    )
+    assert _looks_like_contents(page) is True
+
+
+def test_page_of_provisions_is_not_mistaken_for_contents():
+    page = make_page(
+        [
+            "111 (1) Minimum yard requirements do not apply on the side",
+            "of the lot where a commercial or industrial use abuts a",
+            "railway right-of-way, but section 110 applies, with the",
+            "necessary modifications, to preserve the sight triangle at",
+            "the intersection of the railway and the street.",
+            "111 (2) Where a new residential development abuts a railway",
+            "right-of-way, a minimum 30 metre setback shall be",
+            "maintained between the railway right-of-way and a main",
+            "building.",
+            "Reduced frontage on a curve",
+            "112 (1) Where a lot fronts on the outside of a curve, the",
+            "minimum frontage may be reduced by up to 20 percent.",
+            "112 (2) Subsection (1) does not apply in the MD Zone.",
+        ]
+    )
+    assert _looks_like_contents(page) is False
+
+
+def test_term_index_is_not_read_as_the_definitions_section():
+    """The index pairs terms with translations; it states no rule.
+
+    Parsed, it becomes a 10,000-character clause cited as section 1 -
+    the citation the real section 1 already carries.
+    """
+    page = make_page(
+        [
+            "accessory building – bâtiment accessoire",
+            "accessory use – usage accessoire",
+            "additional dwelling unit – logement supplémentaire",
+            "adult cabaret – cabaret pour adultes",
+            "borrow pit – banc d’emprunt",
+            "building – bâtiment",
+            "cemetery – cimetière",
+            "city – ville",
+            "dwelling unit – logement",
+            "garden suite – pavillon-jardin",
+            "lot – lot",
+            "sign – enseigne",
+            "zone – zone",
+        ]
+    )
+    assert _looks_like_term_index(page) is True
+
+
+def test_definitions_section_is_not_mistaken_for_the_index():
+    page = make_page(
+        [
+            "“ garden suite ” means a self-contained dwelling unit that",
+            "is accessory to a single unit dwelling on the same lot.",
+            "“ grade ” means the average level of finished ground",
+            "adjoining a building at all exterior walls.",
+            "“ height ” means the vertical distance between grade and",
+            "the highest point of the roof surface.",
+            "“ lot ” means a parcel of land described in a deed or shown",
+            "on a registered subdivision plan.",
+            "“ sign ” means any device, structure or medium used to",
+            "convey information visually.",
+            "“ street ” means a public highway vested in the City.",
+            "“ yard ” means an open space on the same lot as a building.",
+            "“ zone ” means an area of the City shown on Schedule A.",
+        ]
+    )
+    assert _looks_like_term_index(page) is False
+
+
+# ---------------------------------------------------------------------
+#  Saint John: two heading forms, dot leaders, tab-index dividers
+# ---------------------------------------------------------------------
+
+SAINT_JOHN = SCHEMES["saintjohn"]
+
+
+@pytest.mark.parametrize(
+    "line, number, title",
+    [
+        ("4.2(5) PARKING LOT STANDARDS", "4.2(5)", "PARKING LOT STANDARDS"),
+        # The title-case form. Recognising only the first left one clause
+        # running from parking standards to signs, thirty pages later.
+        ("4.4 Drive-Thru Facilities", "4.4", "Drive-Thru Facilities"),
+        ("15.3 Trinity Royal Street Wall", "15.3", "Trinity Royal Street Wall"),
+    ],
+)
+def test_saint_john_heads_a_section_either_way(line, number, title):
+    found = SAINT_JOHN.clause.match(line)
+    assert found is not None
+    assert found.group(1) == number
+    assert found.group(2) == title
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A bold table cell carrying a section-shaped number. Read as a
+        # heading, it opens a clause numbered 0.25.
+        "0.25 square metres for each face",
+        "0.5 square metres total of all faces",
+    ],
+)
+def test_bold_table_cell_is_not_a_saint_john_heading(line):
+    assert SAINT_JOHN.clause.match(line) is None
+
+
+def test_dot_leader_contents_page_is_recognised():
+    """Saint John's contents run a dot leader out to the page number."""
+    page = make_page(
+        [
+            "SCHEDULE A: ZONING MAP..................................... 247",
+            "SCHEDULE B: FEES........................................... 251",
+            "SCHEDULE C: UPTOWN PARKING EXEMPTION AREA.................. 252",
+            "SCHEDULE D: INTENSIFICATION AREAS.......................... 255",
+        ]
+    )
+    assert _looks_like_toc(page) is True
+
+
+def test_tab_index_divider_page_is_skipped():
+    """A part divider lists every part and states no rule.
+
+    Left in, it appends "Residential Zones 10" to whichever clause was
+    open - which is how the sidebar ended up inside fourteen of
+    Fredericton's clauses.
+    """
+    page = make_page(
+        [
+            "Administration 1",
+            "Zones and Administration 2",
+            "Definitions 3",
+            "General Provisions: Access, Parking, and Loading 4",
+            "General Provisions: Landscaping and Amenity Space 6",
+            "General Provisions: Signs 7",
+            "General Provisions: Other Standards 8",
+            "Residential Zones 10",
+            "Commercial Zones 11",
+            "Industrial Zones 12",
+            "Community Facility Zones 13",
+            "Other Zones 14",
+        ]
+    )
+    assert _looks_like_divider(page) is True
+
+
+def test_page_of_provisions_is_not_mistaken_for_a_divider():
+    page = make_page(
+        [
+            "(a) A parking lot involving five or more parking spaces located",
+            "on a lot in the Primary Development Area shall be developed and",
+            "maintained with a paved surface enclosed with permanent curbing.",
+            "(b) A parking lot involving five or more parking spaces located",
+            "outside of the Primary Development Area shall be developed and",
+            "maintained with a paved surface.",
+            "(c) Any storey above the maximum street wall height shall step",
+            "back at a minimum depth of 3 metres away from the street facade.",
+            "Maximum Height: 12",
+            "Minimum Side Yard: 3",
+        ]
+    )
+    assert _looks_like_divider(page) is False
+
+
+def test_schedule_page_is_cited_by_its_caption():
+    """A schedule is a map, not part of the clause flow.
+
+    Its caption is how the provisions refer to it ("as delineated by
+    Schedule C"), so that is what it is cited as.
+    """
+    page = make_page(
+        [
+            "Schedule K: Spruce Lake Industrial (SLI) Zone Setbacks",
+            "[2025, C.P. 111-196]",
+        ]
+    )
+    number, title = _table_identity(page)
+    assert number == "Schedule K"
+    assert title == "Spruce Lake Industrial (SLI) Zone Setbacks"
+
+
+def test_table_caption_still_wins_over_a_schedule_reference():
+    page = make_page(
+        [
+            "TABLE 12.3 RESIDENTIAL ZONES LOT REQUIREMENTS TABLE",
+            "as delineated by Schedule C: Uptown Parking Exemption Area",
+        ]
+    )
+    number, _ = _table_identity(page)
+    assert number == "Table 12.3"
+
+
+def test_unnumbered_definition_is_cited_under_its_section():
+    """An invented number would cite a provision the bylaw does not have.
+
+    Moncton's definitions are alphabetical and unnumbered, so they are
+    cited under the section that introduces them, with the defined term
+    as the heading - which is how a reader finds one.
+    """
+    page = make_page_with_bold(
+        [
+            ("Definitions", True),
+            ("1 Unless the context requires a different meaning, the", True),
+            ("following definitions apply in this By-law.", False),
+            ("“ garden suite ” means an additional dwelling unit placed", False),
+            ("in the rear yard of an existing single unit dwelling lot.", False),
+        ]
+    )
+    clauses = assemble_clauses([page], SCHEMES["moncton"])
+    terms = {c.section_title: c.section_number for c in clauses}
+    assert terms["garden suite"] == "1"
+
+
+def test_french_section_number_carries_a_trailing_period():
+    """The French column writes "1." and does not set it in bold.
+
+    Undetected, section 1 never opens, and every French definition falls
+    back to a section number that does not exist.
+    """
+    page = make_page_with_bold(
+        [
+            ("Définitions", True),
+            ("1. Sauf indication contraire du contexte, les", False),
+            ("définitions qui suivent s’appliquent au présent arrêté.", False),
+            ("« pavillon-jardin » Logement supplémentaire implanté dans", False),
+            ("la cour arrière d’un lot d’habitation unifamiliale.", False),
+        ]
+    )
+    clauses = assemble_clauses([page], SCHEMES["moncton"])
+    terms = {c.section_title: c.section_number for c in clauses}
+    assert terms["pavillon-jardin"] == "1"
+    assert terms["Définitions"] == "1"
+
+
+# ---------------------------------------------------------------------
+#  CBRM: use tables whose rows are named rather than numbered
+# ---------------------------------------------------------------------
+
+CBRM = SCHEMES["cbrm"]
+
+
+def zone_row(label: str, marks: list[tuple[str, float]], top: float) -> list[dict]:
+    """A table row: a label at the margin, then marks at column centres."""
+    words = line_of(label, 60, top)
+    for text, x in marks:
+        words.append(word(text, x, top))
+    return words
+
+
+ZONE_COLUMNS = [("UR1", 334), ("UR2", 367), ("UR3", 400), ("UR4", 433), ("RR5", 466), ("R6", 499), ("R7", 525)]
+
+
+def use_table_lines() -> list[dict]:
+    words = []
+    for text, x in ZONE_COLUMNS:
+        words.append(word(text, x, 100))
+    # Every zone permitted.
+    words += zone_row("Dwelling, One Unit", [("P", x) for _, x in ZONE_COLUMNS], 120)
+    # R6 is blank. Flattened to text this reads "P P P P P P", which puts
+    # a permission in R6 and takes one away from R7.
+    words += zone_row(
+        "Dwelling, Two Unit",
+        [("P", x) for name, x in ZONE_COLUMNS if name != "R6"],
+        140,
+    )
+    return words
+
+
+def test_named_row_keeps_each_mark_with_its_zone():
+    """A blank cell must not shift every mark to its left.
+
+    Reading the row as text says two-unit dwellings are permitted in R6,
+    where the table has no entry, and not in R7, where it does.
+    """
+    matrix = _find_matrix(_group_lines(use_table_lines()), CBRM)
+    assert matrix is not None
+
+    rendered = _render_matrix(matrix, {})
+    two_unit = next(line for line in rendered if line.startswith("Dwelling, Two Unit"))
+    assert "R7" in two_unit
+    assert "R6" not in two_unit
+
+
+def test_numbered_scheme_ignores_named_rows():
+    """Fredericton's matrices are numbered, and stay that way.
+
+    Accepting named rows everywhere let any line ending in a symbol count
+    as a row, which changed the number its whole matrix was cited under.
+    """
+    matrix = _find_matrix(_group_lines(use_table_lines()), SCHEME)
+    assert matrix is None or not matrix.rows
+
+
+def test_zone_code_with_a_trailing_figure_is_recognised():
+    """UR1 and R7 are zone codes; the default pattern rejects both.
+
+    Unrecognised, the header line is skipped and a row of "P"s is taken
+    for the column headings instead.
+    """
+    assert CBRM.zone_code.match("UR1") is not None
+    assert CBRM.zone_code.match("R7") is not None
+
+
+def test_whole_legend_is_read_from_one_line():
+    """CBRM sets its entire legend on a single line.
+
+    Anchored on the first symbol, the meaning of P became the rest of the
+    line, and that text then appeared in every rendered row.
+    """
+    line = (
+        "P = Permitted as-of-right C = Permitted with additional conditions "
+        "SP = Site Plan Approval"
+    )
+    entries = {m.group(1): m.group(2) for m in CBRM.legend.finditer(line)}
+    assert entries == {
+        "P": "Permitted as-of-right",
+        "C": "Permitted with additional conditions",
+        "SP": "Site Plan Approval",
+    }
+
+
+@pytest.mark.parametrize(
+    "line, number",
+    [
+        ("1.1. TITLE", "1.1"),
+        ("4.22. SIGNS", "4.22"),
+        ("5.0. RESIDENTIAL USE SUMMARY TABLE", "5.0"),
+    ],
+)
+def test_cbrm_heading_carries_a_trailing_period(line, number):
+    """No other municipality writes its headings this way.
+
+    Anchored on "N.N ", not one of the bylaw's 75 headings matched, and
+    the document parsed as a single 89,904-character clause.
+    """
+    found = CBRM.clause.match(line)
+    assert found is not None
+    assert found.group(1) == number
+
+
+def test_row_of_symbols_is_never_taken_for_a_zone_header():
+    """A table with few zone columns must not adopt a row of cells.
+
+    CBRM's commercial table has three zone columns. Below the column
+    minimum its real header was skipped, the first row of "P"s was taken
+    for the headings, and every mark was then reported as permitted in a
+    zone named "P" - which reached the database before anyone read it.
+    """
+    columns = [("CRC", 334), ("MUC", 400), ("MU", 466)]
+
+    words = [word(name, x, 100) for name, x in columns]
+    words += zone_row("Dwelling, One Unit", [("P", x) for _, x in columns], 120)
+    words += zone_row("Live-work unit", [("P", x) for _, x in columns[:2]], 140)
+
+    matrix = _find_matrix(_group_lines(words), CBRM)
+    assert matrix is not None
+    assert [w["text"] for w in matrix.columns.words] == ["CRC", "MUC", "MU"]
+
+    rendered = _render_matrix(matrix, {})
+    live_work = next(line for line in rendered if line.startswith("Live-work"))
+    assert "CRC" in live_work and "MUC" in live_work
+    assert "MU." not in live_work and ": P" not in live_work
+
+
+def test_overlay_column_does_not_hide_the_zone_header():
+    """Fredericton's sign matrix header ends with the overlay code "-H".
+
+    The header is found by scanning back from the end of the line, so one
+    unrecognised token there hid the whole heading and a row of symbols
+    was used instead. Every sign type on that page was reported as
+    permitted in a zone called "P" - and it had been in the corpus since
+    the first ingestion.
+    """
+    header = line_of("Development Agreement I-2 IEX RT BI GI HI INF -H", 60, 100)
+    rows = zone_row(
+        "6.4(1)",
+        [("P", 200), ("P", 260), ("P", 320), ("P", 380), ("SD", 440)],
+        120,
+    )
+
+    matrix = _find_matrix(_group_lines(header + rows), SCHEME)
+    assert matrix is not None
+    assert [w["text"] for w in matrix.columns.words][-1] == "-H"
+    assert "P" not in [w["text"] for w in matrix.columns.words]
+
+
+@pytest.mark.parametrize(
+    "meaning, expected",
+    [
+        # The banner shares the legend's line and is not part of what the
+        # symbol means; left in, it repeats in every rendered row.
+        ("Permitted LIMITED DEVELOPMENT ZONES", "Permitted"),
+        ("Permitted", "Permitted"),
+        ("Permitted as-of-right", "Permitted as-of-right"),
+        ("Site Plan Approval", "Site Plan Approval"),
+        ("Permitted with additional conditions", "Permitted with additional conditions"),
+    ],
+)
+def test_legend_meaning_drops_a_trailing_banner(meaning, expected):
+    assert _legend_meaning(meaning) == expected

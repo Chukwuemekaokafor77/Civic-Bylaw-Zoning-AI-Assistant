@@ -28,7 +28,7 @@ import {
 import {
   useMunicipalities,
   useProvinces,
-  verificationLabel,
+  verificationStatus,
   type Municipality,
 } from "@/lib/registry";
 
@@ -111,14 +111,15 @@ export function RegionalSelector({ value, onChange }: Props) {
   }
 
   const showLanguage = languages.length > 1;
+  const status = verificationStatus(value.municipality);
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+    <div className="space-y-3.5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_auto]">
         <div className="flex-1 space-y-1.5">
           <label
             htmlFor="province"
-            className="flex items-center gap-1.5 text-sm font-medium"
+            className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
           >
             <MapPin className="size-3.5" aria-hidden />
             Province or territory
@@ -150,7 +151,10 @@ export function RegionalSelector({ value, onChange }: Props) {
         </div>
 
         <div className="flex-1 space-y-1.5">
-          <label htmlFor="municipality" className="text-sm font-medium">
+          <label
+            htmlFor="municipality"
+            className="text-xs font-medium text-muted-foreground"
+          >
             Municipality
           </label>
           <Select
@@ -185,10 +189,10 @@ export function RegionalSelector({ value, onChange }: Props) {
         </div>
 
         {showLanguage && (
-          <div className="space-y-1.5 sm:w-40">
+          <div className="space-y-1.5 lg:w-40">
             <label
               htmlFor="language"
-              className="flex items-center gap-1.5 text-sm font-medium"
+              className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
             >
               <Globe className="size-3.5" aria-hidden />
               Language
@@ -243,10 +247,21 @@ export function RegionalSelector({ value, onChange }: Props) {
 
       {/* Section 7 asks for the verification date to be visible, not buried
           in the answer. A reader deciding whether to trust a setback figure
-          should see the corpus's status before they ask, not after. */}
-      {value.municipality && (
-        <p className="text-xs text-muted-foreground">
-          {verificationLabel(value.municipality)}
+          should see the corpus's status before they ask, not after - and an
+          UNVERIFIED corpus is a warning, so it is not styled as quiet
+          supporting text the eye skips. */}
+      {status && (
+        <p
+          className={
+            status.verified
+              ? "flex items-center gap-1.5 text-xs text-muted-foreground"
+              : "flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs leading-relaxed text-amber-900 dark:text-amber-200"
+          }
+        >
+          {!status.verified && (
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          )}
+          <span className="text-pretty">{status.label}</span>
         </p>
       )}
     </div>

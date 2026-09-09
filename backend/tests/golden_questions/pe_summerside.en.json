@@ -1,0 +1,39 @@
+{
+  "municipality_id": "pe_summerside",
+  "language": "en",
+  "bylaw_name": "City of Summerside Zoning Bylaw CS-40",
+  "notes": [
+    "Summerside sets the heading above the section number rather than beside it, so the number line is not bold. None of those sections opened a clause and one ran to 33,974 characters, swallowing the zone chapters that follow it. The zone questions here are what that clause was hiding.",
+    "expect_sections uses the numbers as the bylaw writes them: 15.1 and 15.2 are provisions of the Low Density Residential zone, and definitions sit under 1.8.",
+    "The province-wide development standards regulations appended at page 163 restart numbering at 1, which is why the clause pattern accepts a bare number."
+  ],
+  "questions": [
+    {
+      "id": "r1-dwelling-units",
+      "question": "How many dwelling units can I have on a lot in the R1 zone?",
+      "expect_sections": ["15.2"],
+      "expect_text": ["four dwelling units"],
+      "why": "A section whose heading sits on the line above its number. Until that was handled it had no clause of its own."
+    },
+    {
+      "id": "r1-purpose",
+      "question": "What is the low density residential zone for?",
+      "expect_sections": ["15.1"],
+      "expect_text": ["Low Density Residential"],
+      "why": "Pairs with the question above: both were inside the same oversized clause."
+    },
+    {
+      "id": "secondary-suite-definition",
+      "question": "What is a secondary suite?",
+      "expect_sections": ["1.8"],
+      "expect_text": ["self-contained dwelling unit"],
+      "why": "Definitions are unnumbered and cite the section that introduces them."
+    },
+    {
+      "id": "accessory-dwelling-vocabulary",
+      "question": "Can I add a granny flat to my house?",
+      "expect_sections": ["1.8", "15.2"],
+      "why": "The bylaw says 'accessory dwelling unit', never 'granny flat'. Only semantic retrieval bridges this."
+    }
+  ]
+}

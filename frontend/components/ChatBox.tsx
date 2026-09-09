@@ -14,7 +14,7 @@
  */
 
 import { useMutation } from "@tanstack/react-query";
-import { Loader2, Send } from "lucide-react";
+import { CornerDownLeft, Loader2, MessageSquareText, Send } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
 import { MessageList, type Message } from "@/components/MessageList";
@@ -25,6 +25,21 @@ import { StreamHttpError, streamAnswer, type Citation } from "@/lib/stream";
 
 const MIN_QUERY_LENGTH = 3;
 const MAX_QUERY_LENGTH = 1000;
+
+/**
+ * Shown before the first question.
+ *
+ * Not decoration: a blank box gives no sense of what this corpus can
+ * answer, and a resident's first guess is often phrasing the bylaw does
+ * not use. These are real topics with indexed sections behind them.
+ */
+const STARTERS = [
+  "Can I build a garden suite?",
+  "Can I run a business from my home?",
+  "Am I allowed to put an apartment in my basement?",
+  "How far from the property line does a swimming pool have to be?",
+  "Can I keep backyard chickens?",
+];
 
 type Props = {
   selection: RegionalSelection;
@@ -38,16 +53,13 @@ export function ChatBox({ selection }: Props) {
   const municipality = selection.municipality;
   const ready = Boolean(municipality);
 
-  const updateAnswer = useCallback(
-    (id: string, patch: Partial<Message>) => {
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === id ? { ...message, ...patch } : message,
-        ),
-      );
-    },
-    [],
-  );
+  const updateAnswer = useCallback((id: string, patch: Partial<Message>) => {
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === id ? { ...message, ...patch } : message,
+      ),
+    );
+  }, []);
 
   const ask = useMutation({
     mutationFn: async (text: string) => {
@@ -123,19 +135,30 @@ export function ChatBox({ selection }: Props) {
   const canSubmit =
     ready && !ask.isPending && trimmed.length >= MIN_QUERY_LENGTH;
 
-  function onSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!canSubmit) return;
-    ask.mutate(trimmed);
+  function submit(text: string) {
+    if (!ready || ask.isPending) return;
+    if (text.trim().length < MIN_QUERY_LENGTH) return;
+    ask.mutate(text.trim());
     setQuestion("");
   }
 
+  function onSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    submit(question);
+  }
+
+  const showStarters = messages.length === 0;
+
   return (
-    <div className="space-y-6">
-      {messages.length > 0 && <MessageList messages={messages} />}
+    <section className="space-y-5">
+      {messages.length > 0 && (
+        <div className="rounded-2xl border border-border/70 bg-card p-5 shadow-sm sm:p-6">
+          <MessageList messages={messages} />
+        </div>
+      )}
 
       <form
-        className="space-y-3"
+        className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm transition-shadow focus-within:border-primary/40 focus-within:shadow-md"
         onSubmit={onSubmit}
         aria-describedby="chatbox-status"
       >
@@ -152,29 +175,40 @@ export function ChatBox({ selection }: Props) {
             // usually one sentence, so requiring a click would be friction.
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
-              onSubmit(event);
+              submit(question);
             }
           }}
           placeholder={
             ready
-              ? `e.g. Can I build a garden suite in ${municipality?.name}?`
+              ? `Ask about zoning in ${municipality?.name}…`
               : "Select a municipality to begin."
           }
-          className="resize-none"
+          className="min-h-0 resize-none rounded-none border-0 bg-transparent px-4 py-3.5 text-base shadow-none focus-visible:ring-0 md:text-sm"
         />
 
-        <div className="flex items-center justify-between gap-3">
-          <p id="chatbox-status" className="text-xs text-muted-foreground">
-            {!ready
-              ? "Select a municipality to begin."
-              : tooShort
-                ? `Ask at least ${MIN_QUERY_LENGTH} characters.`
-                : ask.isPending
-                  ? "Searching the bylaw…"
-                  : `Answers are drawn only from ${municipality?.name}'s indexed bylaws.`}
+        <div className="flex items-center justify-between gap-3 border-t border-border/60 bg-muted/40 px-3 py-2.5">
+          <p
+            id="chatbox-status"
+            className="flex items-center gap-1.5 text-xs text-muted-foreground"
+          >
+            {!ready ? (
+              "Select a municipality to begin."
+            ) : tooShort ? (
+              `Ask at least ${MIN_QUERY_LENGTH} characters.`
+            ) : ask.isPending ? (
+              <>
+                <Loader2 className="size-3 animate-spin" aria-hidden />
+                Searching the bylaw…
+              </>
+            ) : (
+              <>
+                <CornerDownLeft className="size-3" aria-hidden />
+                Enter to send · Shift + Enter for a new line
+              </>
+            )}
           </p>
 
-          <Button type="submit" disabled={!canSubmit}>
+          <Button type="submit" size="sm" disabled={!canSubmit}>
             {ask.isPending ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />
             ) : (
@@ -184,7 +218,29 @@ export function ChatBox({ selection }: Props) {
           </Button>
         </div>
       </form>
-    </div>
+
+      {showStarters && (
+        <div className="space-y-2.5">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <MessageSquareText className="size-3.5" aria-hidden />
+            Try one of these
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {STARTERS.map((starter) => (
+              <button
+                key={starter}
+                type="button"
+                disabled={!ready || ask.isPending}
+                onClick={() => submit(starter)}
+                className="rounded-full border border-border/70 bg-card px-3.5 py-1.5 text-xs text-foreground/80 shadow-xs transition-colors hover:border-primary/40 hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {starter}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

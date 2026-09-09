@@ -49,7 +49,13 @@ import structlog  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
 from app.services.chunker import MunicipalityContext, chunk_clauses  # noqa: E402
-from app.services.document_parser import NumberingScheme, parse_pdf  # noqa: E402
+from app.services.document_parser import (  # noqa: E402
+    SCHEME_HEALTH_MAX_CHARS,
+    parse_bilingual_pdf,
+    parse_pdf,
+    scheme_for,
+    scheme_health,
+)
 from app.services.embedder import (  # noqa: E402
     DEFAULT_BATCH_SIZE,
     Embedder,
@@ -61,7 +67,7 @@ from app.services.source_tracker import (  # noqa: E402
     SourceTracker,
     fetch_source,
 )
-from app.services.vector_store import BylawChunkStore  # noqa: E402
+from app.services.vector_store import BylawChunkStore, chunk_fingerprint  # noqa: E402
 
 log = structlog.get_logger("ingest")
 
@@ -146,16 +152,23 @@ def sources_for(entry: dict) -> list[dict]:
     return []
 
 
-def deduplicate_sources(sources: list[dict]) -> list[dict]:
+def deduplicate_sources(sources: list[dict], entry: dict) -> list[dict]:
     """Collapse languages that share one physical document.
 
-    Moncton registers EN and FR against the SAME interleaved PDF. Fetching
-    and embedding it twice would double the cost and write two chunk sets
-    whose text is identical but whose `language` differs, so a French query
-    could retrieve the English row and cite it as French law. Splitting that
-    document by language is a parser problem (flagged in the registry), not
-    something a second download solves.
+    Two language rows pointing at one URL used to mean the second row was
+    the same text over again, so embedding both would let a French query
+    retrieve an English row and cite it as French law.
+
+    That is no longer true of a document the parser can separate. Moncton
+    registers EN and FR against the same interleaved PDF, and each language
+    is now parsed out of its own column, so both rows carry real and
+    different text. The registry says which documents those are; the
+    document is fetched once per language, which is one extra download
+    against a corpus that would otherwise be half missing.
     """
+    if entry.get("interleaved_bilingual"):
+        return list(sources)
+
     seen: dict[str, dict] = {}
     collapsed: list[dict] = []
     for source in sources:
@@ -163,9 +176,9 @@ def deduplicate_sources(sources: list[dict]) -> list[dict]:
         if url in seen:
             seen[url].setdefault("_also_languages", []).append(source["language"])
             continue
-        entry = dict(source)
-        seen[url] = entry
-        collapsed.append(entry)
+        entry_copy = dict(source)
+        seen[url] = entry_copy
+        collapsed.append(entry_copy)
     return collapsed
 
 
@@ -219,6 +232,14 @@ async def ingest_source(
         outcome.status = "not_a_document"
         outcome.detail = str(exc)[:200]
         return outcome
+    except Exception as exc:  # noqa: BLE001 - isolated deliberately
+        # One municipality's problem must not end the run. Moncton's site
+        # serves an incomplete TLS chain, and before this branch existed
+        # that single failure aborted ingestion for the six municipalities
+        # queued behind it.
+        outcome.status = "error"
+        outcome.detail = f"{type(exc).__name__}: {exc}"[:200]
+        return outcome
 
     decision = await tracker.decide(
         municipality_id, language, bylaw_name, fetched.content_hash, force=force
@@ -233,14 +254,38 @@ async def ingest_source(
         pdf_path = Path(workdir) / "source.pdf"
         pdf_path.write_bytes(fetched.content)
 
-        clauses = parse_pdf(pdf_path, scheme=NumberingScheme())
+        # Numbering differs per municipality; the registry says which.
+        scheme = scheme_for(entry.get("numbering"))
+        if entry.get("interleaved_bilingual"):
+            # One document, both languages, side by side on every line.
+            # Parsing it as a single stream would put half the French in
+            # the English chunks and cite each in the wrong language.
+            corpora = parse_bilingual_pdf(pdf_path, scheme=scheme)
+            clauses = corpora.get(language, [])
+        else:
+            clauses = parse_pdf(pdf_path, scheme=scheme)
         outcome.clauses = len(clauses)
+        health = scheme_health(clauses)
 
     if not clauses:
         outcome.status = "no_clauses"
         outcome.detail = (
             "parser produced no clauses - the numbering scheme likely does "
             "not match this municipality's document"
+        )
+        return outcome
+
+    # A scheme that fits only part of a document still produces clauses,
+    # each absorbing everything up to the next heading it recognises. That
+    # text then carries the wrong section number, so an answer quoting it
+    # cites a provision it did not come from. Refuse rather than publish it.
+    if not health["healthy"] and not force:
+        outcome.status = "unhealthy_parse"
+        outcome.detail = (
+            f"{health['oversized']} clause(s) over "
+            f"{SCHEME_HEALTH_MAX_CHARS:,} characters (largest {health['max']:,}); "
+            "the numbering scheme does not fit this document. Re-run with "
+            "--force to ingest anyway."
         )
         return outcome
 
@@ -261,16 +306,25 @@ async def ingest_source(
         outcome.detail = f"{decision.reason.value}; would embed and upsert"
         return outcome
 
-    # Resume: skip chunks a previous run already embedded and committed.
-    done = await store.embedded_chunk_keys(municipality_id, bylaw_name, language)
-    pending = [p for p in payloads if (p.section_number, p.chunk_index) not in done]
+    # Resume: skip chunks a previous run already embedded, unless the text
+    # has since changed. A parser fix rewrites what a clause says while its
+    # number and index stay put, and skipping on the key alone would leave
+    # the old text embedded for good.
+    done = await store.embedded_chunk_fingerprints(
+        municipality_id, bylaw_name, language
+    )
+    pending = [
+        p
+        for p in payloads
+        if done.get((p.section_number, p.chunk_index))
+        != chunk_fingerprint(p.chunk_content)
+    ]
     outcome.resumed = len(payloads) - len(pending)
 
     # Embed and commit in slices rather than embedding the whole document
-    # and writing once. A capped daily quota makes an all-or-nothing run
-    # self-defeating: the first attempt died at batch 7 of 15, discarding
-    # ~300 chunks of quota that had already been spent. Committing each
-    # slice means every unit of quota buys permanent progress.
+    # and writing once. Kept after the move to a local model: a slice that
+    # completes is a slice that survives an interrupted run, and it keeps
+    # peak memory bounded on a 2 GB model.
     quota_hit: str | None = None
     for start in range(0, len(pending), DEFAULT_BATCH_SIZE):
         slice_ = pending[start : start + DEFAULT_BATCH_SIZE]
@@ -352,7 +406,7 @@ async def run(args: argparse.Namespace) -> int:
 
         await sync_registry(store._client, entry)
 
-        sources = deduplicate_sources(sources_for(entry))
+        sources = deduplicate_sources(sources_for(entry), entry)
         if not sources:
             summary.add(
                 SourceOutcome(entry["id"], "-", "-", "no_source",
@@ -365,15 +419,26 @@ async def run(args: argparse.Namespace) -> int:
                 continue
 
             print(f"\n>>> {entry['id']} [{source['language']}] {source['bylaw_name']}")
-            outcome = await ingest_source(
-                entry,
-                source,
-                embedder=embedder,
-                store=store,
-                tracker=tracker,
-                force=args.force,
-                dry_run=args.dry_run,
-            )
+            try:
+                outcome = await ingest_source(
+                    entry,
+                    source,
+                    embedder=embedder,
+                    store=store,
+                    tracker=tracker,
+                    force=args.force,
+                    dry_run=args.dry_run,
+                )
+            except Exception as exc:  # noqa: BLE001 - isolated deliberately
+                # Second layer: a failure in parsing, chunking or upsert
+                # is also contained to its own source.
+                outcome = SourceOutcome(
+                    entry["id"],
+                    source["language"],
+                    source["bylaw_name"],
+                    "error",
+                    detail=f"{type(exc).__name__}: {exc}"[:200],
+                )
             if outcome.resumed:
                 outcome.detail = (
                     (outcome.detail + "; ") if outcome.detail else ""

@@ -1,0 +1,124 @@
+{
+  "municipality_id": "nb_fredericton",
+  "language": "en",
+  "bylaw_name": "Zoning By-law Z-5",
+  "notes": [
+    "Questions are phrased the way a resident would ask them, not in bylaw vocabulary. Fredericton says 'Garden Suite' where a resident says 'granny flat', and that gap is exactly what retrieval has to close.",
+    "expect_sections asserts retrieval reached the right clause. expect_text asserts the clause's TEXT survived parsing intact - these strings are the ones the known parser defects destroyed, so a regression fails here rather than in production.",
+    "Nothing here asserts on generated wording. The model's phrasing varies run to run; what must not vary is which bylaw text it was given."
+  ],
+  "questions": [
+    {
+      "id": "garden-suite-rules",
+      "question": "Can I build a garden suite?",
+      "expect_sections": ["7.3(7)"],
+      "expect_text": ["550 m²", "75 m²", "1.8 metre"],
+      "why": "The headline ADU question. expect_text pins the superscript fix and the value/label pairing."
+    },
+    {
+      "id": "garden-suite-vocabulary",
+      "question": "Can I put a granny flat in my back yard for my mother?",
+      "expect_sections": ["7.3(7)"],
+      "why": "The bylaw never says 'granny flat'. Only semantic retrieval can bridge this, so it fails when vector search is unavailable - which is the point of measuring it."
+    },
+    {
+      "id": "garden-suite-definition",
+      "question": "What is a garden suite?",
+      "expect_sections": ["3(85)"],
+      "why": "Definitions chapter. Section 3 was once swallowed whole into one oversized chunk."
+    },
+    {
+      "id": "kennel-conditional",
+      "question": "Are kennels allowed in the RR-CH zone?",
+      "expect_sections": ["8.14(2)"],
+      "expect_text": ["Conditional Uses", "Kennel"],
+      "why": "The permitted/conditional column split. Read across the columns, a kennel becomes a permitted use."
+    },
+    {
+      "id": "rrch-permitted-uses",
+      "question": "What can I build in the Rural Residential Chateau Heights zone?",
+      "expect_sections": ["8.14(2)"],
+      "expect_text": ["Permitted Uses", "Single Detached Dwelling"],
+      "why": "Same clause from the permitted side; both lists must remain separable."
+    },
+    {
+      "id": "minimum-lot-area-r1n",
+      "question": "What is the minimum lot area for an interior lot in the R-1N zone?",
+      "expect_sections": ["8.3(4)"],
+      "expect_text": ["345 m²", "Interior Lot"],
+      "why": "Zone standards. The value column was once detached from its label, leaving numbers that could pair with any row."
+    },
+    {
+      "id": "lot-frontage-r1n",
+      "question": "How wide does my lot need to be in R-1N?",
+      "expect_sections": ["8.3(4)"],
+      "expect_text": ["11.5 metres"],
+      "why": "Second measurement from the same standards table."
+    },
+    {
+      "id": "home-occupation-rules",
+      "question": "Can I run a business out of my house?",
+      "expect_sections": ["7.3(1)"],
+      "why": "Section 4 names home businesses as a target topic."
+    },
+    {
+      "id": "home-occupation-definition",
+      "question": "What counts as a home occupation?",
+      "expect_sections": ["3(96)", "7.3(1)"],
+      "match": "any",
+      "why": "Either the definition or the rules is a defensible answer."
+    },
+    {
+      "id": "basement-apartment",
+      "question": "Am I allowed to put an apartment in my basement?",
+      "expect_sections": ["7.3(8)"],
+      "why": "Secondary suites, the other ADU form Section 4 names."
+    },
+    {
+      "id": "keeping-hens",
+      "question": "Can I keep backyard chickens?",
+      "expect_sections": ["7.3(9)"],
+      "why": "The bylaw says 'hens', a resident says 'chickens'."
+    },
+    {
+      "id": "swimming-pool-setback",
+      "question": "How far from the property line does a swimming pool have to be?",
+      "expect_sections": ["4.2(4)"],
+      "expect_text": ["2 metres"],
+      "why": "A setback question with a specific measurement."
+    },
+    {
+      "id": "citation-lookup-exact",
+      "question": "What does section 8.14(4) say?",
+      "expect_sections": ["8.14(4)"],
+      "why": "Citation-style lookup. Vector search alone ranked this third; the keyword RPC is what puts it first."
+    },
+    {
+      "id": "citation-lookup-nested",
+      "question": "What are the rules in 7.3(7)?",
+      "expect_sections": ["7.3(7)"],
+      "why": "Vector search missed this section entirely. Guards the hybrid merge and the section-hint extractor."
+    },
+    {
+      "id": "sign-permissions-matrix",
+      "question": "Which commercial zones allow a canopy sign?",
+      "expect_sections": ["6.4"],
+      "expect_text": ["CANOPY", "COR-1", "MX-1", "CCIL"],
+      "why": "The sign permission matrix. Multi-character zone codes came apart into 'L', 'O', 'C', 'M' when word segmentation regressed, which silently destroyed the zone mapping while still looking like a citable clause."
+    },
+    {
+      "id": "accessory-building",
+      "question": "Do I need a permit for a garden shed?",
+      "expect_sections": ["4.2(3)", "3(3)", "4.1(10)"],
+      "match": "any",
+      "why": "Accessory buildings are covered in several places; any of them is a reasonable retrieval."
+    },
+    {
+      "id": "out-of-scope-fallback",
+      "question": "How do I renew my driver's licence?",
+      "expect_sections": [],
+      "expect_fallback": true,
+      "why": "Nothing in a zoning bylaw answers this. The assistant must decline rather than stretch an unrelated clause into an answer."
+    }
+  ]
+}

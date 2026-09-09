@@ -308,3 +308,78 @@ def test_mark_human_verified_updates_both_tables():
     assert client.tables[SOURCES_TABLE].updates[0]["values"] == {
         "last_verified_at": "2026-09-07"
     }
+
+
+# ---------------------------------------------------------------------
+#  TLS chain completion (Moncton)
+#
+#  Moncton's server sends only its leaf certificate and omits the
+#  intermediate, so OpenSSL cannot build a path to a trusted root. The
+#  chain is completed from the issuer named in the certificate's AIA
+#  extension - the same thing a browser does - and never bypassed.
+# ---------------------------------------------------------------------
+
+
+def test_untrusted_source_is_a_source_error():
+    """Callers that catch SourceError broadly still handle it."""
+    from app.services.source_tracker import SourceError, UntrustedSource
+
+    assert issubclass(UntrustedSource, SourceError)
+
+
+def test_certificate_errors_are_recognised():
+    from app.services.source_tracker import _is_certificate_error
+
+    assert _is_certificate_error(Exception("[SSL: CERTIFICATE_VERIFY_FAILED] ...")) is True
+    assert _is_certificate_error(Exception("unable to get local issuer certificate")) is True
+    assert _is_certificate_error(Exception("Connection refused")) is False
+
+
+def test_issuer_url_is_read_from_the_aia_extension():
+    """Without an AIA URL there is nothing to fetch and the chain stands."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.source_tracker import _issuer_url
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(x509.oid.NameOID.COMMON_NAME, "test")])
+    now = datetime.now(timezone.utc)
+
+    without = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(1)
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    assert _issuer_url(without) is None
+
+    with_aia = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(2)
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(
+            x509.AuthorityInformationAccess(
+                [
+                    x509.AccessDescription(
+                        x509.oid.AuthorityInformationAccessOID.CA_ISSUERS,
+                        x509.UniformResourceIdentifier("http://ca.example/int.crt"),
+                    )
+                ]
+            ),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    assert _issuer_url(with_aia) == "http://ca.example/int.crt"
+    _ = serialization  # imported for parity with the module under test
